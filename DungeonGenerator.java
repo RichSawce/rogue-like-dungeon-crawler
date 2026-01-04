@@ -20,17 +20,17 @@ public final class DungeonGenerator {
 
     public Dungeon generate(int w, int h) {
         Dungeon d = new Dungeon(w, h);
-
         List<Rect> rooms = new ArrayList<>();
 
         for (int i = 0; i < GameConfig.MAX_ROOMS; i++) {
             int rw = rng.range(GameConfig.ROOM_MIN, GameConfig.ROOM_MAX);
             int rh = rng.range(GameConfig.ROOM_MIN, GameConfig.ROOM_MAX);
 
-            // Hardened placement: ensure the RNG range is valid
-            int maxRx = w - rw - 2;
-            int maxRy = h - rh - 2;
-            if (maxRx <= 1 || maxRy <= 1) continue; // room can't fit, try another
+            // Max top-left so the room stays inside the dungeon with a 1-tile border.
+            int maxRx = (w - 2) - rw;  // room occupies [rx .. rx+rw-1] <= w-2
+            int maxRy = (h - 2) - rh;
+
+            if (maxRx < 1 || maxRy < 1) continue; // can't fit, try another
 
             int rx = rng.range(1, maxRx);
             int ry = rng.range(1, maxRy);
@@ -53,11 +53,10 @@ public final class DungeonGenerator {
             rooms.add(r);
         }
 
-        // Guarantee at least 2 rooms by brute fallback
+        // Guarantee at least 2 rooms by brute fallback (ALWAYS in-bounds)
         if (rooms.size() < 2) {
-            Rect a = new Rect(3, 3, 8, 8);
-            // Clamp so it never goes out of bounds if w/h are smaller than expected
-            Rect b = new Rect(Math.max(3, w - 12), Math.max(3, h - 12), 8, 8);
+            Rect a = clampRoom(new Rect(3, 3, 8, 8), w, h);
+            Rect b = clampRoom(new Rect(w - 12, h - 12, 8, 8), w, h);
 
             carveRoom(d, a);
             carveRoom(d, b);
@@ -77,6 +76,23 @@ public final class DungeonGenerator {
         return d;
     }
 
+    // Ensures the room fits inside [1..w-2] / [1..h-2]
+    private static Rect clampRoom(Rect r, int w, int h) {
+        int minX = 1;
+        int minY = 1;
+        int maxX = (w - 2) - r.w;
+        int maxY = (h - 2) - r.h;
+
+        int cx = clamp(r.x, minX, Math.max(minX, maxX));
+        int cy = clamp(r.y, minY, Math.max(minY, maxY));
+
+        return new Rect(cx, cy, r.w, r.h);
+    }
+
+    private static int clamp(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(v, hi));
+    }
+
     private static Rect expand(Rect r, int pad) {
         return new Rect(r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2);
     }
@@ -90,7 +106,6 @@ public final class DungeonGenerator {
     }
 
     private void carveCorridor(Dungeon d, int x1, int y1, int x2, int y2) {
-        // L-corridor (randomly choose order)
         if (rng.chance(0.5)) {
             carveH(d, x1, x2, y1);
             carveV(d, y1, y2, x2);

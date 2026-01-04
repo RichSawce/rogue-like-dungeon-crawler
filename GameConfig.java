@@ -25,4 +25,10 @@ public final class GameConfig {
     public static final int PLAYER_FOV_RADIUS = 10;
     public static final int START_ENEMIES_MIN = 6;
     public static final int START_ENEMIES_MAX = 10;
+
+    public static final int VIEW_W_TILES = MAP_W;
+    public static final int VIEW_H_TILES = MAP_H; // map-only (no UI)
+
+    public static final int WINDOW_W_PX = VIEW_W_TILES * TILE_SIZE * SCALE;
+    public static final int WINDOW_H_PX = (VIEW_H_TILES + UI_H_TILES) * TILE_SIZE * SCALE;
 }

@@ -31,9 +31,8 @@ public final class GamePanel extends JPanel {
             @Override public void keyReleased(KeyEvent e) { input.onKeyReleased(e); }
         });
 
-        // start a run
-        long seed = System.currentTimeMillis();
-        game.newRun(seed);
+        // start at menu
+        game.goToMainMenu();
     }
 
     public void start() {
@@ -64,20 +63,25 @@ public final class GamePanel extends JPanel {
     protected void paintComponent(Graphics g0) {
         super.paintComponent(g0);
 
-        // Pixel-perfect scaling: draw to a small buffer then scale up
+        // Logical buffer (your game is authored in this resolution)
         int logicalW = GameConfig.MAP_W * GameConfig.TILE_SIZE;
         int logicalH = (GameConfig.MAP_H + GameConfig.UI_H_TILES) * GameConfig.TILE_SIZE;
 
         Image img = createImage(logicalW, logicalH);
         Graphics2D g = (Graphics2D) img.getGraphics();
+        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_OFF);
+        g.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_OFF);
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
 
         renderer.draw(g, game, logicalW, logicalH);
         g.dispose();
 
+        // IMPORTANT FIX:
+        // Draw the logical buffer scaled to the *actual* panel size (not logicalW*SCALE),
+        // so nothing can be cut off if the window ends up a few pixels different.
         Graphics2D g2 = (Graphics2D) g0;
         g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
-        g2.drawImage(img, 0, 0, logicalW * GameConfig.SCALE, logicalH * GameConfig.SCALE, null);
+        g2.drawImage(img, 0, 0, getWidth(), getHeight(), null);
     }
 }
