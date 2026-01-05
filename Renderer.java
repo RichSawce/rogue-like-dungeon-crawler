@@ -418,26 +418,57 @@ public final class Renderer {
 
         g.setFont(pixelBold(8f));
         int nameY = iy + 16;
-        if (nameY < iy + infoH - 2) g.drawString(b.foe.name, ix + 6, nameY);
 
-        int barX = ix + 6;
-        int barW = infoW - 12;
-        int barH = 6;
+        if (nameY < iy + infoH - 2) {
+            g.drawString(b.foe.name, ix + 6, nameY);
 
-        int barY = Math.min(iy + 28, iy + infoH - 18);
-        barY = Math.max(iy + 22, barY);
+            String foeStatus = "";
+            if (b.foeFrozenTurns > 0) foeStatus = "FROZEN";
+            else if (b.foeSlowTurns > 0) foeStatus = "SLOW";
 
+
+
+            if (!foeStatus.isEmpty()) {
+                FontMetrics fm = g.getFontMetrics(); // bold metrics now
+                int sw = fm.stringWidth(foeStatus);
+                int sx = ix + infoW - 6 - sw;
+                g.drawString(foeStatus, sx, nameY);
+            }
+        }
+
+        // --- ENEMY HP BAR (ADD THIS) ---
+        g.setColor(Palette.GB3); // make sure text/bar uses visible color
+
+        int eBarX = ix + 6;
+        int eBarW = infoW - 12;
+
+// place bar below name line, but clamp so it stays inside the box
+        int eBarY = Math.min(iy + 28, iy + infoH - 32);
+        eBarY = Math.max(iy + 22, eBarY);
+
+        int eBarH = 6;
+
+// bar background
         g.setColor(Palette.GB1);
-        g.fillRect(barX, barY, barW, barH);
+        g.fillRect(eBarX, eBarY, eBarW, eBarH);
 
-        int eFill = (int) Math.round(barW * (b.foe.hp / (double) b.foe.maxHp));
-        eFill = Math.max(0, Math.min(barW, eFill));
+// bar fill
+        double eFrac = (b.foe.maxHp <= 0) ? 0.0 : (b.foe.hp / (double) b.foe.maxHp);
+        int eFill = (int) Math.round(eBarW * eFrac);
+        eFill = Math.max(0, Math.min(eBarW, eFill));
+
         g.setColor(Palette.GB3);
-        g.fillRect(barX, barY, eFill, barH);
+        g.fillRect(eBarX, eBarY, eFill, eBarH);
 
+// OPTIONAL: HP text under bar (only if there’s room)
         g.setFont(pixel(8f));
-        int eTextY = Math.min(barY + 18, iy + infoH - 4);
-        g.drawString("HP " + b.foe.hp + "/" + b.foe.maxHp, ix + 6, eTextY);
+        int eHpTextY = Math.min(eBarY + 18, iy + infoH - 4);
+        if (eHpTextY > eBarY + 6) {
+            g.drawString("HP " + b.foe.hp + "/" + b.foe.maxHp, ix + 6, eHpTextY);
+        }
+
+// then switch to normal font for HP text
+        g.setFont(pixel(8f));
 
         // --- Bottom arena (player) ---
         g.setColor(Palette.GB0);
@@ -514,11 +545,27 @@ public final class Renderer {
         int youY = pIy + 16;
         if (youY < pIy + pInfoH - 2) g.drawString("YOU", pIx + 6, youY);
 
+        String youStatus = "";
+        if (b.playerSlowTurns > 0) youStatus += "SLOW";
+        if (b.fireSwordActive) {
+            if (!youStatus.isEmpty()) youStatus += " ";
+            youStatus += "FIRE";
+        }
+
+        if (!youStatus.isEmpty()) {
+            FontMetrics fm = g.getFontMetrics();
+            int sw = fm.stringWidth(youStatus);
+            int sx = pIx + pInfoW - 6 - sw;
+            g.drawString(youStatus, sx, youY);
+        }
+
         int pBarX = pIx + 6;
         int pBarW = pInfoW - 12;
 
         int pBarY = Math.min(pIy + 28, pIy + pInfoH - 32);
         pBarY = Math.max(pIy + 22, pBarY);
+
+        int barH = 6; // try 6 or 7 (PressStart2P tends to need compact UI)
 
         g.setColor(Palette.GB1);
         g.fillRect(pBarX, pBarY, pBarW, barH);
@@ -554,50 +601,91 @@ public final class Renderer {
             g.setFont(pixel(8f)); // restore
         }
 
-        // --- Command / log box ---
+        // --- Command area outer box ---
         g.setColor(Palette.GB1);
         g.fillRect(0, cmdY, panelW, cmdH);
         g.setColor(Palette.GB3);
         g.drawRect(0, cmdY, panelW - 1, cmdH - 1);
 
-        g.setFont(pixel(8f)); // you can try 10f or 11f if PressStart2P feels too big
-        int logY = cmdY + 16;
+        // --- Split into MESSAGE (top) + MENU (bottom) frames ---
+        int innerPad = 6;
+
+        int msgBoxX = innerPad;
+        int msgBoxY = cmdY + innerPad;
+
+        // message height: enough for 1 line in your pixel font
+        int msgBoxH = 26; // tune 24..32 if you want taller
+
+        int msgBoxW = panelW - innerPad * 2;
+
+        int menuBoxX = innerPad;
+        int menuBoxY = msgBoxY + msgBoxH + 6;
+        int menuBoxW = msgBoxW;
+        int menuBoxH = (cmdY + cmdH) - innerPad - menuBoxY;
+
+        // Draw message frame
+        g.setColor(Palette.GB0);
+        g.fillRect(msgBoxX, msgBoxY, msgBoxW, msgBoxH);
+        g.setColor(Palette.GB3);
+        g.drawRect(msgBoxX, msgBoxY, msgBoxW, msgBoxH);
+
+        g.setFont(pixel(8f));
+        FontMetrics msgFm = g.getFontMetrics();
+        int msgTextY = msgBoxY + 6 + msgFm.getAscent();
+
         if (b.log != null && !b.log.isBlank()) {
-            g.drawString(b.log, tile, logY);
+            String msgFit = ellipsize(g, b.log, msgBoxW - 12);
+            g.drawString(msgFit, msgBoxX + 6, msgTextY);
         }
 
+        // Draw menu frame (always drawn, but we only render options when appropriate)
+        g.setColor(Palette.GB0);
+        g.fillRect(menuBoxX, menuBoxY, menuBoxW, menuBoxH);
+        g.setColor(Palette.GB3);
+        g.drawRect(menuBoxX, menuBoxY, menuBoxW, menuBoxH);
+
+        // ---- What we draw inside the MENU frame depends on phase ----
         if (b.phase == org.example.game.Battle.Phase.PLAYER_MENU) {
             String[] opts = {"FIGHT", "SPELL", "ITEM", "RUN"};
             int lineH = 14;
-            int baseY = cmdY + 34;
 
-            int maxBase = cmdY + cmdH - (opts.length * lineH) - 4;
+            int baseY = menuBoxY + 18;
+
+            // clamp so the options fit inside menuBox
+            int maxBase = menuBoxY + menuBoxH - (opts.length * lineH) - 6;
             baseY = Math.min(baseY, maxBase);
-            baseY = Math.max(baseY, cmdY + 24);
+            baseY = Math.max(baseY, menuBoxY + 14);
 
             for (int i = 0; i < opts.length; i++) {
                 String prefix = (i == b.menuIndex) ? "> " : "  ";
                 g.drawString(prefix + opts[i], tile, baseY + i * lineH);
             }
+
         } else if (b.phase == org.example.game.Battle.Phase.WON) {
-            g.drawString("Returning...", tile, cmdY + Math.min(56, cmdH - 6));
+            g.drawString("Returning...", tile, menuBoxY + Math.min(18, menuBoxH - 6));
+
         } else if (b.phase == org.example.game.Battle.Phase.LOST) {
-            g.drawString("You were defeated...", tile, cmdY + Math.min(48, cmdH - 6));
+            g.drawString("You were defeated...", tile, menuBoxY + Math.min(18, menuBoxH - 6));
+
         } else if (b.phase == org.example.game.Battle.Phase.ENEMY_DELAY) {
-            g.drawString("(enemy prepares...)", tile, cmdY + Math.min(48, cmdH - 6));
+            g.drawString("(enemy prepares...)", tile, menuBoxY + Math.min(18, menuBoxH - 6));
+
+        } else if (b.phase == org.example.game.Battle.Phase.ENEMY_MESSAGE ||
+                b.phase == org.example.game.Battle.Phase.ENEMY_ACT) {
+            // Intentionally blank: message is in the top frame.
+            // (You could draw "..." here if you want.)
         } else if (b.phase == org.example.game.Battle.Phase.ITEM_MENU) {
 
             java.util.List<org.example.item.ItemType> items = game.getUsableBattleItems();
             int itemCount = items.size();
 
             int lineH = 14;
-            int baseY = cmdY + 34;
-            baseY = Math.max(baseY, cmdY + 24);
+            int baseY = Math.max(menuBoxY + 14, menuBoxY + 18);
 
             if (itemCount == 0) {
                 g.drawString("No usable items.", tile, baseY);
                 g.setFont(pixel(8f));
-                g.drawString("ESC back", tile, cmdY + Math.min(cmdH - 6, baseY + 24));
+                g.drawString("ESC back", tile, menuBoxY + Math.min(menuBoxH - 6, baseY + 20));
                 return;
             }
 
@@ -614,21 +702,21 @@ public final class Renderer {
 
             g.setFont(pixel(8f));
             g.drawString("←/→ select   ENTER use   ESC back", tile,
-                    cmdY + Math.min(cmdH - 6, baseY + itemCount * lineH + 10));
+                    menuBoxY + Math.min(menuBoxH - 6, baseY + itemCount * lineH + 10));
 
         } else if (b.phase == org.example.game.Battle.Phase.SPELL_MENU) {
+
             var p = game.player();
             java.util.List<org.example.entity.Player.SpellType> spells = p.knownSpellsInOrder();
             int n = spells.size();
 
             int lineH = 14;
-            int baseY = cmdY + 34;
-            baseY = Math.max(baseY, cmdY + 24);
+            int baseY = Math.max(menuBoxY + 14, menuBoxY + 18);
 
             if (n == 0) {
                 g.drawString("No spells known.", tile, baseY);
                 g.setFont(pixel(8f));
-                g.drawString("ESC back", tile, cmdY + Math.min(cmdH - 6, baseY + 24));
+                g.drawString("ESC back", tile, menuBoxY + Math.min(menuBoxH - 6, baseY + 20));
                 return;
             }
 
@@ -653,7 +741,7 @@ public final class Renderer {
 
             g.setFont(pixel(8f));
             g.drawString("←/→ select   ENTER cast   ESC back", tile,
-                    cmdY + Math.min(cmdH - 6, baseY + n * lineH + 10));
+                    menuBoxY + Math.min(menuBoxH - 6, baseY + n * lineH + 10));
         }
 
     }
@@ -804,8 +892,7 @@ public final class Renderer {
 
         if (page == 0) {
             // Equipment
-            String wep = "Weapon: " + p.getWeaponName() +
-                    " (+" + p.getWeaponBonusMin() + "/+" + p.getWeaponBonusMax() + ")";
+            String wep = "Weapon: " + p.getWeaponName();
             g.drawString(ellipsize(g, wep, boxW - 16), leftBoxX + 8, topY + 38);
 
             g.drawString("LV " + p.level + "  EXP " + p.exp + "/" + p.expToNext, leftBoxX + 8, topY + 56);
@@ -817,17 +904,44 @@ public final class Renderer {
             g.drawString("Cast in battle only", leftBoxX + 8, topY + 56);
         }
 
-        // RIGHT TOP CONTENT (current + preview)
-        g.drawString("HP  " + p.hp + "/" + p.maxHp, rightBoxX + 8, topY + 38);
-        g.drawString("MP  " + p.mp + "/" + p.maxMp, rightBoxX + 8, topY + 56);
-        g.drawString("ATK " + p.atkMin + "-" + p.atkMax, rightBoxX + 8, topY + 74);
+        // RIGHT TOP CONTENT (collapse: show only stats that change; if none change, show all current)
+        g.setFont(pixel(8f));
 
-        // Preview line (only show if differs)
-        if (previewHp != p.hp || previewMp != p.mp || previewAtkMin != p.atkMin || previewAtkMax != p.atkMax) {
-            g.setFont(pixel(7f));
-            String prev = "PREVIEW  HP " + previewHp + "  MP " + previewMp + "  ATK " + previewAtkMin + "-" + previewAtkMax;
-            g.drawString(ellipsize(g, prev, boxW - 16), rightBoxX + 8, topY + 88);
-            g.setFont(pixel(8f));
+        String hpCur  = p.hp + "/" + p.maxHp;
+        String hpPrev = previewHp + "/" + p.maxHp;
+
+        String mpCur  = p.mp + "/" + p.maxMp;
+        String mpPrev = previewMp + "/" + p.maxMp;
+
+        String atkCur  = p.atkMin + "-" + p.atkMax;
+        String atkPrev = previewAtkMin + "-" + previewAtkMax;
+
+        boolean hpChanged  = (previewHp != p.hp);
+        boolean mpChanged  = (previewMp != p.mp);
+        boolean atkChanged = (previewAtkMin != p.atkMin || previewAtkMax != p.atkMax);
+
+        int statMaxW = boxW - 16;
+        int x = rightBoxX + 8;
+        int y = topY + 38;
+        int statLineH = 18;
+
+        java.util.ArrayList<String> lines = new java.util.ArrayList<>();
+
+        if (hpChanged)  lines.add("HP  " + hpCur + " > " + hpPrev);
+        if (mpChanged)  lines.add("MP  " + mpCur + " > " + mpPrev);
+        if (atkChanged) lines.add("ATK " + atkCur + " > " + atkPrev);
+
+// If nothing would change, show normal current stats
+        if (lines.isEmpty()) {
+            lines.add("HP  " + hpCur);
+            lines.add("MP  " + mpCur);
+            lines.add("ATK " + atkCur);
+        }
+
+// draw collapsed list
+        for (String s : lines) {
+            g.drawString(ellipsize(g, s, statMaxW), x, y);
+            y += statLineH;
         }
 
         // LIST AREA BOX

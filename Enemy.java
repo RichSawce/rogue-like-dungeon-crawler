@@ -6,7 +6,7 @@ import org.example.game.util.RNG;
 public final class Enemy extends Actor {
 
     public enum Type { GOBLIN, SKELETON, CULTIST, SLIME, ZOMBIE }
-
+    private static final int ENEMY_BASE_ACC = 85; // generic baseline for enemy moves
     private final int xpValue;
     public final Type type;
 
@@ -52,8 +52,8 @@ public final class Enemy extends Actor {
         int baseA1  = 2 + Math.min(4, floor / 2);
         int baseA2  = 4 + Math.min(5, floor / 2);
 
-        int hp, a1, a2, xp;
-        String name;
+        int hp = 0, a1 = 0, a2 = 0, xp = 0;
+        String name = "";
 
         switch (t) {
             case SLIME -> {
@@ -84,7 +84,7 @@ public final class Enemy extends Actor {
                 a2 = baseA2 + 2;               // spikier
                 xp = 8 + floor * 2;
             }
-            default -> { // GOBLIN
+            case GOBLIN -> {
                 name = "Goblin";
                 hp = baseHp;
                 a1 = baseA1;
@@ -92,6 +92,7 @@ public final class Enemy extends Actor {
                 xp = 4 + floor * 2;
             }
         }
+        
 
         return new Enemy(t, name, x, y, hp, a1, a2, xp);
     }
@@ -128,184 +129,77 @@ public final class Enemy extends Actor {
     // ----------------------------
     public String performBattleMove(RNG rng, Player player, Battle battle) {
 
-        int dmg;
+        // Decide move per type
+        String moveName;
+        int acc;
+        boolean appliesSlow = false;
+        int slowTurns = 0;
+
+        int dmg = rollDamage(rng);
 
         switch (type) {
-
+            case GOBLIN -> {
+                // Mostly reliable
+                moveName = rng.nextInt(100) < 70 ? "Slash" : "Lunge";
+                acc = (moveName.equals("Slash")) ? 88 : 80;
+            }
             case SLIME -> {
-                int move = rng.nextInt(100);
-
-                if (move < 30) {
-                    String m = "Split Splash";
-                    trigEnemyAttack(battle);
-
-                    // Slightly less accurate multi-hit
-                    if (!rollHit(rng, 78, battle)) return missLine(m);
-
-                    int d1 = Math.max(1, rollDamage(rng) - 1);
-                    int d2 = Math.max(1, rollDamage(rng) - 1);
-                    player.hp -= (d1 + d2);
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + "! (" + d1 + "+" + d2 + ")";
-                } else if (move < 55) {
-                    String m = "Ooze Touch";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 85, battle)) return missLine(m);
-
-                    dmg = Math.max(1, rollDamage(rng) - 1);
-                    player.hp -= dmg;
-
-                    int heal = 2 + rng.nextInt(3); // 2-4
-                    this.hp = Math.min(this.maxHp, this.hp + heal);
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " for " + dmg + " and regenerates +" + heal + ".";
-                } else {
-                    String m = "Slime Slam";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 88, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng);
-                    player.hp -= dmg;
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " for " + dmg + ".";
-                }
+                moveName = rng.nextInt(100) < 60 ? "Slam" : "Splash";
+                acc = (moveName.equals("Slam")) ? 82 : 90;
+                dmg = Math.max(1, dmg - 1);
             }
-
             case ZOMBIE -> {
-                int move = rng.nextInt(100);
-
-                if (move < 35) {
-                    String m = "Rotten Bite";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 82, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng) + 1;
-                    player.hp -= dmg;
-
-                    int heal = Math.max(1, dmg / 2);
-                    this.hp = Math.min(this.maxHp, this.hp + heal);
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " for " + dmg + " and heals +" + heal + "!";
-                } else if (move < 50) {
-                    String m = "Heavy Lunge";
-                    trigEnemyAttack(battle);
-
-                    // Big move, lower accuracy
-                    if (!rollHit(rng, 75, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng) + 3;
-                    player.hp -= dmg;
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " for " + dmg + "!";
-                } else {
-                    String m = "Clubbing Swing";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 86, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng);
-                    player.hp -= dmg;
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " for " + dmg + ".";
-                }
+                moveName = "Claw";
+                acc = 84;
             }
-
             case SKELETON -> {
-                int move = rng.nextInt(100);
-
-                if (move < 30 && !battle.foeGuarded) {
-                    String m = "Bone Guard";
-                    trigEnemyAttack(battle);
-                    battle.foeGuarded = true;
-                    return name + " uses " + m + "!";
-                } else if (move < 55) {
-                    String m = "Bone Throw";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 80, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng) + 2;
-                    player.hp -= dmg;
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " for " + dmg + "!";
-                } else {
-                    String m = "Rattle Slash";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 88, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng);
-                    player.hp -= dmg;
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " for " + dmg + ".";
-                }
+                moveName = rng.nextInt(100) < 50 ? "Thrust" : "Skewer";
+                acc = (moveName.equals("Thrust")) ? 86 : 76;
+                dmg += (moveName.equals("Skewer")) ? 2 : 0;
             }
-
             case CULTIST -> {
-                int move = rng.nextInt(100);
-
-                if (move < 35) {
-                    String m = "Hex Bolt";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 80, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng) + 3;
-                    player.hp -= dmg;
-
-                    trigPlayerHit(battle);
-                    return name + " casts " + m + " for " + dmg + "!";
-                } else if (move < 60) {
-                    String m = "Dark Drain";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 83, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng) + 1;
-                    player.hp -= dmg;
-
-                    int heal = 2 + rng.nextInt(3); // 2-4
-                    this.hp = Math.min(this.maxHp, this.hp + heal);
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " (" + dmg + ") and heals +" + heal + "!";
+                if (rng.nextInt(100) < 35) {
+                    moveName = "Ice Curse";
+                    acc = 78;
+                    appliesSlow = true;
+                    slowTurns = 3;
+                    dmg = 0;
                 } else {
-                    String m = "Ritual Lash";
-                    trigEnemyAttack(battle);
-
-                    if (!rollHit(rng, 87, battle)) return missLine(m);
-
-                    dmg = rollDamage(rng);
-                    player.hp -= dmg;
-
-                    trigPlayerHit(battle);
-                    return name + " uses " + m + " for " + dmg + ".";
+                    moveName = "Hex Bolt";
+                    acc = 82;
+                    dmg = Math.max(1, dmg - 1);
                 }
             }
-
-            default -> { // GOBLIN
-                String m = "Stab";
-                trigEnemyAttack(battle);
-
-                if (!rollHit(rng, 90, battle)) return missLine(m);
-
-                dmg = rollDamage(rng);
-                player.hp -= dmg;
-
-                trigPlayerHit(battle);
-                return name + " uses " + m + " for " + dmg + ".";
+            default -> { // fallback (shouldn't happen)
+                moveName = "Slash";
+                acc = 85;
             }
         }
+
+        // Attacker animation
+        trigEnemyAttack(battle);
+
+        // 1) Player dodge check
+        if (Battle.rollDodge(rng, 12, battle.playerDodgePenaltyPct)) { // uses same base you set in Game, tune if desired
+            return name + " uses " + moveName + "... but you DODGE!";
+        }
+
+        // 2) Miss check (enemy moves can miss)
+        if (!Battle.rollHit(rng, acc, battle.foeAccuracyPenaltyPct)) {
+            return missLine(moveName);
+        }
+
+        // 3) Apply effect / damage
+        if (appliesSlow) {
+            battle.applyPlayerSlow(slowTurns, 30, 20);
+
+            return name + " casts " + moveName + "! You are SLOWED!";
+        }
+
+        // Hit reaction
+        trigPlayerHit(battle);
+
+        player.hp = Math.max(0, player.hp - dmg);
+        return name + " uses " + moveName + " and hits for " + dmg + "!";
     }
 }

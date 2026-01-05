@@ -43,6 +43,8 @@ public final class Game {
 
     private String lastLog = "Find the stairs (>) and press Enter.";
 
+    private String lastLogBeforeInventory = "";
+
     // UI log timing
     private int logFramesLeft = 0;      // >0 = countdown, 0 = hidden, <0 = sticky
     private static final int UI_FPS = 60; // adjust if your game loop uses a different FPS
@@ -72,6 +74,14 @@ public final class Game {
     // Battle-start transition
     private boolean battleStartPending = false;
     private Enemy battleStartFoe = null;
+
+    // ---- Battle tuning ----
+    private static final int PLAYER_BASE_DODGE_PCT = 12;
+    private static final int FOE_BASE_DODGE_PCT    = 8;
+
+    // If SLOW is active, apply big penalties (already stored on battle fields)
+    private static final int SLOW_ACC_PENALTY_PCT  = 30;
+    private static final int SLOW_DODGE_PENALTY_PCT= 20;
 
     // Fade tuning knobs
     private static final int FADE_STEPS = 4;          // 4 steps -> GB3/GB2/GB1/GB0 feel
@@ -104,11 +114,12 @@ public final class Game {
             case MP_POTION -> "MP Potion  x" + c + "  (+6 MP)";
 
             // swords (small boosts that stack nicely with level ATK ups)
-            case SWORD_WORN   -> "Worn Sword  x" + c + "  (Equip: +0/+1 ATK)";
-            case SWORD_BRONZE -> "Bronze Sword x" + c + " (Equip: +1/+1 ATK)";
-            case SWORD_IRON   -> "Iron Sword   x" + c + " (Equip: +1/+2 ATK)";
-            case SWORD_STEEL  -> "Steel Sword  x" + c + " (Equip: +2/+2 ATK)";
-            case SWORD_KNIGHT -> "Knight Sword x" + c + " (Equip: +2/+3 ATK)";
+            // swords (small boosts that stack nicely with level ATK ups)
+            case SWORD_WORN   -> "Worn Sword  x" + c;
+            case SWORD_BRONZE -> "Bronze Sword x" + c;
+            case SWORD_IRON   -> "Iron Sword   x" + c;
+            case SWORD_STEEL  -> "Steel Sword  x" + c;
+            case SWORD_KNIGHT -> "Knight Sword x" + c;
 
             // spell tomes
             case TOME_ICE_SHARD     -> "Tome: Ice Shard x" + c + " (Learn spell)";
@@ -198,7 +209,7 @@ public final class Game {
         recomputeFov();
         turn.reset();
 
-        setLog("Floor " + floor + ". Move with arrows/WASD. Bump to attack.", 2.5);
+        setLog("Move with arrows/WASD. Walk to attack.", 2.5);
         state = State.DUNGEON;
         battle = null;
     }
@@ -278,6 +289,7 @@ public final class Game {
 
         // Open inventory
         if (input.wasTapped(java.awt.event.KeyEvent.VK_I)) {
+            lastLogBeforeInventory = lastLog;
             state = State.INVENTORY;
             lastLog = "Inventory: ←/→ tabs   ↑/↓ select   ENTER use (items)   ESC close";
             invPage = 0;
@@ -432,6 +444,9 @@ public final class Game {
         // close
         if (input.wasTapped(java.awt.event.KeyEvent.VK_ESCAPE) || input.wasTapped(java.awt.event.KeyEvent.VK_I)) {
             state = State.DUNGEON;
+            lastLog = lastLogBeforeInventory;   // <-- restore
+            // optional: don't keep the backup forever
+            lastLogBeforeInventory = "";
             return;
         }
 
@@ -616,6 +631,7 @@ public final class Game {
         }
         // Tick sprite anim timers (runs every frame while in battle)
         battle.tickAnims();
+        battle.tickDamage(player);
 
         // If a fade is running, ignore inputs/menus until it finishes
         if (isFading()) return;
@@ -635,17 +651,24 @@ public final class Game {
                 // 0 = FIGHT
                 if (battle.menuIndex == 0) {
 
-                    int dmg = player.rollDamage(rng);
+                    battle.playerAtkFrames = 10;
 
-                    // Fire Sword: small burn damage added to normal attacks (battle-only)
-                    if (battle.fireSwordActive) {
-                        dmg += 2; // small, consistent bonus
+                    // Defender dodge check first
+                    if (foeDodgedAttack()) {
+                        battle.log = "The " + battle.foe.name + " dodges your attack!";
+                        battle.phase = Battle.Phase.ENEMY_DELAY;
+                        battle.timerFrames = 30;
+
+                        tickPlayerBattleStatusesOnAction();
+                        return;
                     }
 
-                    battle.playerAtkFrames = 10; // attacker reacts now
-                    battle.queueEnemyHit(Battle.HIT_LAG_FRAMES, 8); // victim reacts a few frames later
+                    int dmg = player.rollDamage(rng);
 
-                    // If foe is guarding, reduce this hit once
+                    // Fire Sword bonus
+                    if (battle.fireSwordActive) dmg += 2;
+
+                    // Guard reduction
                     if (battle.foeGuarded) {
                         dmg = Math.max(1, dmg / 2);
                         battle.foeGuarded = false;
@@ -656,19 +679,24 @@ public final class Game {
                                 : "You attack for " + dmg + "!";
                     }
 
-                    battle.foe.hp -= dmg;
+                    // player acted -> tick player statuses
+                    tickPlayerBattleStatusesOnAction();
 
-                    if (battle.foe.hp <= 0) {
-                        battle.foe.hp = 0;
+                    // Hit reaction (visual) happens later
+                    battle.queueEnemyHit(Battle.HIT_LAG_FRAMES, 8);
 
-                        battle.startEnemyDefeatAnim();
-                        battle.log = "The " + battle.foe.name + " was defeated!";
+                    // Damage lands later (HP bar delay)
+                    boolean willKill = (battle.foe.hp - dmg) <= 0;
+                    battle.queueFoeDamage(
+                            Battle.HIT_LAG_FRAMES,
+                            dmg,
+                            willKill,
+                            "The " + battle.foe.name + " was defeated!"
+                    );
 
-                        battle.phase = Battle.Phase.WON;
-                    } else {
-                        battle.phase = Battle.Phase.ENEMY_DELAY;
-                        battle.timerFrames = 30;
-                    }
+                    // Enemy acts after delay (unless queued damage kills it; tickDamage flips to WON)
+                    battle.phase = Battle.Phase.ENEMY_DELAY;
+                    battle.timerFrames = 30;
                     return;
                 }
 
@@ -696,6 +724,22 @@ public final class Game {
                     return;
                 }
             }
+        }
+
+        if (battle.phase == Battle.Phase.ENEMY_MESSAGE) {
+
+            // Let the player dismiss early
+            if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) ||
+                    input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+                battle.timerFrames = 0;
+            }
+
+            battle.timerFrames--;
+            if (battle.timerFrames <= 0) {
+                battle.phase = Battle.Phase.PLAYER_MENU;
+                battle.log = "Choose an action.";
+            }
+            return;
         }
 
         if (battle.phase == Battle.Phase.ITEM_MENU) {
@@ -850,6 +894,26 @@ public final class Game {
                 // Apply spell
                 switch (chosen) {
                     case MAGIC_STAB -> {
+                        // Defender dodge
+                        if (foeDodgedAttack()) {
+                            battle.playerAtkFrames = 10;
+                            battle.log = "Magic Stab... but the " + battle.foe.name + " dodges!";
+                            tickPlayerBattleStatusesOnAction();
+                            battle.phase = Battle.Phase.ENEMY_DELAY;
+                            battle.timerFrames = 30;
+                            return;
+                        }
+
+// Miss check (spells can miss)
+                        int spellAcc = 85; // tune
+                        if (!Battle.rollHit(rng, spellAcc, battle.playerAccuracyPenaltyPct)) {
+                            battle.playerAtkFrames = 10;
+                            battle.log = "Magic Stab... MISS!  (-" + cost + " MP)";
+                            tickPlayerBattleStatusesOnAction();
+                            battle.phase = Battle.Phase.ENEMY_DELAY;
+                            battle.timerFrames = 30;
+                            return;
+                        }
                         int dmg = player.rollSpellDamage(rng);
 
                         battle.playerAtkFrames = 10;
@@ -863,10 +927,36 @@ public final class Game {
                             battle.log = "Magic Stab hits for " + dmg + "!  (-" + cost + " MP)";
                         }
 
-                        battle.foe.hp -= dmg;
+                        tickPlayerBattleStatusesOnAction();
+
+                        boolean willKill = (battle.foe.hp - dmg) <= 0;
+                        battle.queueFoeDamage(
+                                Battle.HIT_LAG_FRAMES,
+                                dmg,
+                                willKill,
+                                "The " + battle.foe.name + " was defeated!"
+                        );
                     }
 
                     case ICE_SHARD -> {
+                        if (foeDodgedAttack()) {
+                            battle.playerAtkFrames = 10;
+                            battle.log = "Ice Shard... but the " + battle.foe.name + " dodges!";
+                            tickPlayerBattleStatusesOnAction();
+                            battle.phase = Battle.Phase.ENEMY_DELAY;
+                            battle.timerFrames = 30;
+                            return;
+                        }
+
+                        int spellAcc = 80; // tune (ice shard a bit less reliable)
+                        if (!Battle.rollHit(rng, spellAcc, battle.playerAccuracyPenaltyPct)) {
+                            battle.playerAtkFrames = 10;
+                            battle.log = "Ice Shard... MISS!  (-" + cost + " MP)";
+                            tickPlayerBattleStatusesOnAction();
+                            battle.phase = Battle.Phase.ENEMY_DELAY;
+                            battle.timerFrames = 30;
+                            return;
+                        }
                         int dmg = Math.max(1, player.rollSpellDamage(rng) - 1);
 
                         battle.playerAtkFrames = 10;
@@ -874,14 +964,42 @@ public final class Game {
 
                         // Slow: increase enemy miss chance for 3 enemy actions
                         battle.foeSlowTurns = Math.max(battle.foeSlowTurns, 3);
-                        battle.foeAccuracyPenaltyPct = 20; // enemy -20% accuracy while slow is active
+                        battle.foeAccuracyPenaltyPct = SLOW_ACC_PENALTY_PCT;
+                        battle.foeDodgePenaltyPct = SLOW_DODGE_PENALTY_PCT;
 
                         battle.log = "Ice Shard hits for " + dmg + " and slows the foe!  (-" + cost + " MP)";
-                        battle.foe.hp -= dmg;
+                        tickPlayerBattleStatusesOnAction();
+
+                        boolean willKill = (battle.foe.hp - dmg) <= 0;
+                        battle.queueFoeDamage(
+                                Battle.HIT_LAG_FRAMES,
+                                dmg,
+                                willKill,
+                                "The " + battle.foe.name + " was defeated!"
+                        );
                     }
 
                     case FLASH_FREEZE -> {
                         // Freeze: enemy misses 2 turns, no damage
+
+                        if (foeDodgedAttack()) {
+                            battle.playerAtkFrames = 10;
+                            battle.log = "Flash Freeze... but the " + battle.foe.name + " dodges!";
+                            tickPlayerBattleStatusesOnAction();
+                            battle.phase = Battle.Phase.ENEMY_DELAY;
+                            battle.timerFrames = 30;
+                            return;
+                        }
+
+                        int spellAcc = 75; // tune (strong effect, less reliable)
+                        if (!Battle.rollHit(rng, spellAcc, battle.playerAccuracyPenaltyPct)) {
+                            battle.playerAtkFrames = 10;
+                            battle.log = "Flash Freeze... MISS!  (-" + cost + " MP)";
+                            tickPlayerBattleStatusesOnAction();
+                            battle.phase = Battle.Phase.ENEMY_DELAY;
+                            battle.timerFrames = 30;
+                            return;
+                        }
                         battle.playerAtkFrames = 10;
                         battle.queueEnemyHit(Battle.HIT_LAG_FRAMES, 6);
 
@@ -893,24 +1011,17 @@ public final class Game {
                     case FIRE_SWORD -> {
                         battle.fireSwordActive = true;
                         battle.log = "Fire Sword! Your blade ignites for the rest of the battle.  (-" + cost + " MP)";
+                        tickPlayerBattleStatusesOnAction();
                     }
 
                     case HEAL -> {
                         int healed = player.healHp(15);
                         battle.log = "Heal restores +" + healed + " HP.  (-" + cost + " MP)";
+                        tickPlayerBattleStatusesOnAction();
                     }
                 }
 
-                // Check kill if spell dealt damage
-                if (battle.foe.hp <= 0) {
-                    battle.foe.hp = 0;
-
-                    battle.startEnemyDefeatAnim();
-                    battle.log = "The " + battle.foe.name + " was defeated!";
-
-                    battle.phase = Battle.Phase.WON;
-                    return;
-                }
+// do NOT subtract hp here
 
                 // Enemy turn next
                 battle.phase = Battle.Phase.ENEMY_DELAY;
@@ -933,10 +1044,12 @@ public final class Game {
                     battle.foeSlowTurns--;
                     if (battle.foeSlowTurns <= 0) {
                         battle.foeAccuracyPenaltyPct = 0;
+                        battle.foeDodgePenaltyPct = 0;
                     }
                 }
 
-                battle.phase = Battle.Phase.PLAYER_MENU;
+                battle.phase = Battle.Phase.ENEMY_MESSAGE;
+                battle.timerFrames = 45;
                 return;
             }
 
@@ -956,11 +1069,11 @@ public final class Game {
             if (player.hp <= 0) {
                 battle.phase = Battle.Phase.LOST;
             } else {
-                battle.phase = Battle.Phase.PLAYER_MENU;
+                battle.phase = Battle.Phase.ENEMY_MESSAGE;
+                battle.timerFrames = 45; // ~0.75s at 60fps (tune)
             }
             return;
         }
-
 
         if (battle.phase == Battle.Phase.WON) {
 
@@ -1240,6 +1353,40 @@ public final class Game {
         }
     }
 
+    private void tickPlayerBattleStatusesOnAction() {
+        if (battle == null) return;
+
+        if (battle.playerSlowTurns > 0) {
+            battle.playerSlowTurns--;
+            if (battle.playerSlowTurns <= 0) {
+                battle.playerAccuracyPenaltyPct = 0;
+                battle.playerDodgePenaltyPct = 0;
+            }
+        }
+    }
+
+    private void tickFoeBattleStatusesOnAction() {
+        if (battle == null) return;
+
+        if (battle.foeSlowTurns > 0) {
+            battle.foeSlowTurns--;
+            if (battle.foeSlowTurns <= 0) {
+                battle.foeAccuracyPenaltyPct = 0;
+                battle.foeDodgePenaltyPct = 0;
+            }
+        }
+    }
+
+    // Returns true if the foe dodged (so the attack does nothing)
+    private boolean foeDodgedAttack() {
+        return Battle.rollDodge(rng, FOE_BASE_DODGE_PCT, battle.foeDodgePenaltyPct);
+    }
+
+    // Returns true if the player dodged
+    private boolean playerDodgedAttack() {
+        return Battle.rollDodge(rng, PLAYER_BASE_DODGE_PCT, battle.playerDodgePenaltyPct);
+    }
+
     // Call once per rendered frame (after drawing)
     public void onFramePresented() {
         fadeAwaitingPresent = false;
@@ -1257,9 +1404,18 @@ public final class Game {
 
     public String spellLabel(Player.SpellType s) {
         int cost = spellCost(s);
+
+        // Estimate spell damage range using current player ATK range.
+        // This matches your battle logic where spells use rollSpellDamage (and ICE_SHARD is -1).
+        int baseMin = player.atkMin;
+        int baseMax = player.atkMax;
+
+        String dmgRange = baseMin + "-" + baseMax; // for MAGIC_STAB
+        String iceRange = Math.max(1, baseMin - 1) + "-" + Math.max(1, baseMax - 1);
+
         return switch (s) {
-            case MAGIC_STAB   -> "Magic Stab   (-" + cost + " MP) dmg";
-            case ICE_SHARD    -> "Ice Shard    (-" + cost + " MP) dmg + slow";
+            case MAGIC_STAB   -> "Magic Stab   (-" + cost + " MP) " + dmgRange + " dmg";
+            case ICE_SHARD    -> "Ice Shard    (-" + cost + " MP) " + iceRange + " dmg + slow";
             case FLASH_FREEZE -> "Flash Freeze (-" + cost + " MP) freeze";
             case FIRE_SWORD   -> "Fire Sword   (-" + cost + " MP) battle buff";
             case HEAL         -> "Heal         (-" + cost + " MP) +15 HP";
