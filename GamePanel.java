@@ -44,13 +44,7 @@ public final class GamePanel extends JPanel {
     }
 
     private void tick() {
-        // Restart (works even if dead)
-        if (input.wasTapped(KeyEvent.VK_R)) {
-            long seed = System.currentTimeMillis();
-            game.newRun(seed);
-        }
-
-        // Update game
+        // Update game (Game handles R with fade)
         game.update(input);
 
         // Consume taps

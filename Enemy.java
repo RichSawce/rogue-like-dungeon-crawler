@@ -100,8 +100,10 @@ public final class Enemy extends Actor {
         return rng.range(atkMin, atkMax);
     }
 
-    private boolean rollHit(RNG rng, int accuracyPct) {
-        return rng.nextInt(100) < accuracyPct;
+    private boolean rollHit(RNG rng, int accuracyPct, Battle battle) {
+        int pen = (battle == null) ? 0 : battle.foeAccuracyPenaltyPct;
+        int finalAcc = Math.max(5, Math.min(95, accuracyPct - pen));
+        return rng.nextInt(100) < finalAcc;
     }
 
     private String missLine(String moveName) {
@@ -138,7 +140,7 @@ public final class Enemy extends Actor {
                     trigEnemyAttack(battle);
 
                     // Slightly less accurate multi-hit
-                    if (!rollHit(rng, 78)) return missLine(m);
+                    if (!rollHit(rng, 78, battle)) return missLine(m);
 
                     int d1 = Math.max(1, rollDamage(rng) - 1);
                     int d2 = Math.max(1, rollDamage(rng) - 1);
@@ -150,7 +152,7 @@ public final class Enemy extends Actor {
                     String m = "Ooze Touch";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 85)) return missLine(m);
+                    if (!rollHit(rng, 85, battle)) return missLine(m);
 
                     dmg = Math.max(1, rollDamage(rng) - 1);
                     player.hp -= dmg;
@@ -164,7 +166,7 @@ public final class Enemy extends Actor {
                     String m = "Slime Slam";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 88)) return missLine(m);
+                    if (!rollHit(rng, 88, battle)) return missLine(m);
 
                     dmg = rollDamage(rng);
                     player.hp -= dmg;
@@ -181,7 +183,7 @@ public final class Enemy extends Actor {
                     String m = "Rotten Bite";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 82)) return missLine(m);
+                    if (!rollHit(rng, 82, battle)) return missLine(m);
 
                     dmg = rollDamage(rng) + 1;
                     player.hp -= dmg;
@@ -196,7 +198,7 @@ public final class Enemy extends Actor {
                     trigEnemyAttack(battle);
 
                     // Big move, lower accuracy
-                    if (!rollHit(rng, 75)) return missLine(m);
+                    if (!rollHit(rng, 75, battle)) return missLine(m);
 
                     dmg = rollDamage(rng) + 3;
                     player.hp -= dmg;
@@ -207,7 +209,7 @@ public final class Enemy extends Actor {
                     String m = "Clubbing Swing";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 86)) return missLine(m);
+                    if (!rollHit(rng, 86, battle)) return missLine(m);
 
                     dmg = rollDamage(rng);
                     player.hp -= dmg;
@@ -229,7 +231,7 @@ public final class Enemy extends Actor {
                     String m = "Bone Throw";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 80)) return missLine(m);
+                    if (!rollHit(rng, 80, battle)) return missLine(m);
 
                     dmg = rollDamage(rng) + 2;
                     player.hp -= dmg;
@@ -240,7 +242,7 @@ public final class Enemy extends Actor {
                     String m = "Rattle Slash";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 88)) return missLine(m);
+                    if (!rollHit(rng, 88, battle)) return missLine(m);
 
                     dmg = rollDamage(rng);
                     player.hp -= dmg;
@@ -257,7 +259,7 @@ public final class Enemy extends Actor {
                     String m = "Hex Bolt";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 80)) return missLine(m);
+                    if (!rollHit(rng, 80, battle)) return missLine(m);
 
                     dmg = rollDamage(rng) + 3;
                     player.hp -= dmg;
@@ -268,7 +270,7 @@ public final class Enemy extends Actor {
                     String m = "Dark Drain";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 83)) return missLine(m);
+                    if (!rollHit(rng, 83, battle)) return missLine(m);
 
                     dmg = rollDamage(rng) + 1;
                     player.hp -= dmg;
@@ -282,7 +284,7 @@ public final class Enemy extends Actor {
                     String m = "Ritual Lash";
                     trigEnemyAttack(battle);
 
-                    if (!rollHit(rng, 87)) return missLine(m);
+                    if (!rollHit(rng, 87, battle)) return missLine(m);
 
                     dmg = rollDamage(rng);
                     player.hp -= dmg;
@@ -296,7 +298,7 @@ public final class Enemy extends Actor {
                 String m = "Stab";
                 trigEnemyAttack(battle);
 
-                if (!rollHit(rng, 90)) return missLine(m);
+                if (!rollHit(rng, 90, battle)) return missLine(m);
 
                 dmg = rollDamage(rng);
                 player.hp -= dmg;

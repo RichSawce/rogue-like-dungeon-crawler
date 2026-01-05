@@ -7,6 +7,7 @@ public final class Battle {
     public enum Phase {
         PLAYER_MENU,
         ITEM_MENU,
+        SPELL_MENU,
         ENEMY_DELAY,
         ENEMY_ACT,
         WON,
@@ -23,6 +24,17 @@ public final class Battle {
 
     public String log = "A wild foe appears!";
     public int timerFrames = 0;
+
+    // Spell menu cursor
+    public int spellIndex = 0;
+
+    // Status effects
+    public int foeFrozenTurns = 0;          // enemy skips turns
+    public int foeSlowTurns = 0;            // enemy accuracy penalty duration
+    public int foeAccuracyPenaltyPct = 0;   // e.g. 20 means -20% accuracy
+
+    // Fire Sword buff (player)
+    public boolean fireSwordActive = false; // lasts the whole battle
 
     // ----------------------------
 // Battle sprite “juice” timers
