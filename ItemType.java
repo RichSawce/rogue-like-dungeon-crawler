@@ -14,7 +14,11 @@ public enum ItemType {
 
     // spell tomes (consumed to learn)
     TOME_ICE_SHARD,
+    TOME_SLOW_POKE,
     TOME_FLASH_FREEZE,
     TOME_FIRE_SWORD,
-    TOME_HEAL
+    TOME_HEAL,
+
+    KEY,
+    TOWN_PORTAL
 }

@@ -32,6 +32,23 @@ public final class Battle {
     public int spellIndex = 0;
 
     // ----------------------------
+// New stat tuning knobs
+// ----------------------------
+    private static final int SPEED_ACC_PER_POINT = 2;   // each speed diff = ±2% hit
+    private static final int SPEED_DODGE_PER_POINT = 2; // each speed diff = ±2% dodge
+
+    private static final int INT_SPELL_ACC_PER_POINT = 2; // int diff = ±2% spell accuracy
+    private static final int INT_SPELL_DMG_PER_4 = 1;      // +1 dmg per 4 INT
+
+    private static final int BASE_STATUS_RESIST_PCT = 5;   // everyone has a tiny resist
+    private static final int WILL_RESIST_PER_POINT = 2;    // each (will - casterInt) point = ±2%
+
+    private static final int BASE_SLOW_SHAKE_PCT = 10;     // chance to ignore slow penalties on action
+    private static final int WILL_SLOW_SHAKE_PER_POINT = 2; // +2% per WILL (cap applies)
+
+// Clamp helper already exists: clampPct(...)
+
+    // ----------------------------
     // Status effects (player)
     // ----------------------------
     public boolean fireSwordActive = false; // lasts the whole battle
@@ -108,6 +125,47 @@ public final class Battle {
     public void applyFoeFreeze(int turns) {
         foeFrozenTurns = Math.max(foeFrozenTurns, turns);
     }
+
+    public static boolean rollStatusResist(RNG rng, int casterInt, int targetWill) {
+        int diff = targetWill - casterInt; // positive = more resist
+        int pct = BASE_STATUS_RESIST_PCT + diff * WILL_RESIST_PER_POINT;
+        pct = clampPct(pct, 0, 70); // never guaranteed unless you want it
+        return rng.nextInt(100) < pct;
+    }
+
+    public static int applyWillVsSlowPenalty(RNG rng, int penaltyPct, int targetWill, int slowTurnsActive) {
+        if (penaltyPct <= 0) return 0;
+        if (slowTurnsActive <= 0) return penaltyPct;
+
+        int shake = BASE_SLOW_SHAKE_PCT + targetWill * WILL_SLOW_SHAKE_PER_POINT;
+        shake = clampPct(shake, 0, 65);
+
+        boolean ignoreThisAction = rng.nextInt(100) < shake;
+        return ignoreThisAction ? 0 : penaltyPct;
+    }
+
+    public static boolean rollPhysicalHit(RNG rng, int baseAccuracyPct,
+                                          int attackerSpeed, int defenderSpeed,
+                                          int accuracyPenaltyPct) {
+        int spdBonus = (attackerSpeed - defenderSpeed) * SPEED_ACC_PER_POINT;
+        int finalAcc = clampPct(baseAccuracyPct + spdBonus - accuracyPenaltyPct, 5, 95);
+        return rng.nextInt(100) < finalAcc;
+    }
+
+    public static boolean rollSpellHit(RNG rng, int baseAccuracyPct,
+                                       int casterInt, int targetWill,
+                                       int casterSpeed, int targetSpeed,
+                                       int accuracyPenaltyPct) {
+        int intBonus = (casterInt - targetWill) * INT_SPELL_ACC_PER_POINT;
+
+        // optional: small speed influence so fast targets are harder to tag with magic
+        int spdMod = (casterSpeed - targetSpeed) * 1; // keep tiny
+
+        int finalAcc = clampPct(baseAccuracyPct + intBonus + spdMod - accuracyPenaltyPct, 5, 95);
+        return rng.nextInt(100) < finalAcc;
+    }
+
+
 
     // ----------------------------
     // Turn ticking
@@ -265,8 +323,11 @@ public final class Battle {
     }
 
     // Defender dodge roll (higher = more likely to avoid being hit)
-    public static boolean rollDodge(RNG rng, int baseDodgePct, int dodgePenaltyPct) {
-        int finalDodge = clampPct(baseDodgePct - dodgePenaltyPct, 0, 60);
+    public static boolean rollDodge(RNG rng, int baseDodgePct,
+                                    int attackerSpeed, int defenderSpeed,
+                                    int dodgePenaltyPct) {
+        int spdBonus = (defenderSpeed - attackerSpeed) * SPEED_DODGE_PER_POINT;
+        int finalDodge = clampPct(baseDodgePct + spdBonus - dodgePenaltyPct, 0, 60);
         return rng.nextInt(100) < finalDodge;
     }
 

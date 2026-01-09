@@ -10,13 +10,14 @@ import java.util.List;
 
 public final class Player extends Actor {
 
-    public enum Stat { HP, MP, ATK }
+    public enum Stat { HP, MP, ATK, SPEED, WILL, INT }
 
     // -------------------------
     // Spells
     // -------------------------
     public enum SpellType {
         MAGIC_STAB,
+        SLOW_POKE,
         ICE_SHARD,
         FLASH_FREEZE,
         FIRE_SWORD,
@@ -69,6 +70,22 @@ public final class Player extends Actor {
     public int getWeaponBonusMin() { return weaponBonusMin; }
     public int getWeaponBonusMax() { return weaponBonusMax; }
 
+    // ✅ NEW: total ATK getters (useful for UI + damage logic consistency)
+    public int getBaseAtkMin() { return baseAtkMin; }
+    public int getBaseAtkMax() { return baseAtkMax; }
+
+    public int getAtkMinTotal() { return baseAtkMin + weaponBonusMin; }
+    public int getAtkMaxTotal() { return baseAtkMax + weaponBonusMax; }
+
+    // ✅ NEW: the ONE true base sword/weapon roll
+    // Spells that "share sword base damage" should call this.
+    public int rollBaseWeaponDamage(RNG rng) {
+        int min = getAtkMinTotal();
+        int max = getAtkMaxTotal();
+        if (max < min) max = min;
+        return rng.range(min, max);
+    }
+
     // -------------------------
     // Leveling / stats
     // -------------------------
@@ -95,28 +112,47 @@ public final class Player extends Actor {
     }
 
     public Player(int x, int y) {
-        super("You", x, y, 22, 10, 3, 6);
+        super("You", x, y, 22, 10, 3, 6,
+                5, // speed
+                5, // intelligence
+                5  // will
+        );
 
-        // Base ATK is whatever Actor set
         this.baseAtkMin = this.atkMin;
         this.baseAtkMax = this.atkMax;
 
-        // Default spell: Magic Stab (your old "Spell")
         learnSpell(SpellType.MAGIC_STAB);
-
-        // Default weapon (no bonus)
         equipWeapon("Rusty Sword", 0, 0);
     }
 
-    public int getBaseAtkMin() { return baseAtkMin; }
-    public int getBaseAtkMax() { return baseAtkMax; }
-
-    public int rollDamage(RNG rng) {
-        return rng.range(atkMin, atkMax);
+    public int keyCount() {
+        return inv.count(ItemType.KEY);
     }
 
+    public void addKey(int n) {
+        if (n <= 0) return;
+        inv.add(ItemType.KEY, n);
+    }
+
+    public boolean useKey() {
+        return inv.consumeOne(ItemType.KEY);
+    }
+
+    // ✅ UPDATED: normal damage now funnels through the base weapon roll
+    public int rollDamage(RNG rng) {
+        return rollBaseWeaponDamage(rng);
+    }
+
+    // ✅ UPDATED: keep this method if you still want "spell roll" to be a bit higher.
+    // But if you want spells to share EXACT sword base damage, then have spells call
+    // rollBaseWeaponDamage(rng) directly (recommended).
     public int rollSpellDamage(RNG rng) {
-        return rng.range(atkMin + 2, atkMax + 4);
+        // Your previous behavior was atkMin+2 .. atkMax+4
+        // We'll preserve that here, but based on totals.
+        int min = getAtkMinTotal() + 2;
+        int max = getAtkMaxTotal() + 4;
+        if (max < min) max = min;
+        return rng.range(min, max);
     }
 
     public void gainExp(int amount) {
@@ -145,10 +181,20 @@ public final class Player extends Actor {
                 mp = maxMp;
             }
             case ATK -> {
-                // Increase BASE atk, then recompute with weapon boosts
                 baseAtkMin += 1;
                 baseAtkMax += 1;
                 recomputeAtk();
+            }
+            case SPEED -> {
+                // Actor already has speed (you pass it into super(...))
+                // Assuming Actor exposes it as a field or setter. If it's private, see note below.
+                this.speed += 1;
+            }
+            case INT -> {
+                this.intelligence += 1;
+            }
+            case WILL -> {
+                this.will += 1;
             }
         }
     }

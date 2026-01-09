@@ -29,4 +29,5 @@ public final class Input {
     public void endFrame() {
         tapped.clear();
     }
+
 }

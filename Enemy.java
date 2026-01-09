@@ -10,8 +10,9 @@ public final class Enemy extends Actor {
     private final int xpValue;
     public final Type type;
 
-    private Enemy(Type type, String name, int x, int y, int maxHp, int atkMin, int atkMax, int xpValue) {
-        super(name, x, y, maxHp, atkMin, atkMax);
+    private Enemy(Type type, String name, int x, int y, int maxHp, int atkMin, int atkMax, int xpValue,
+                  int speed, int intelligence, int will) {
+        super(name, x, y, maxHp, 0, atkMin, atkMax, speed, intelligence, will);
         this.type = type;
         this.xpValue = xpValue;
     }
@@ -47,54 +48,90 @@ public final class Enemy extends Actor {
     // ----------------------------
     private static Enemy build(Type t, int x, int y, int floor, RNG rng) {
 
-        // A simple scaling baseline; each type offsets it
-        int baseHp  = 7 + Math.min(14, floor * 2);
-        int baseA1  = 2 + Math.min(4, floor / 2);
-        int baseA2  = 4 + Math.min(5, floor / 2);
+        int tier = Math.max(1, (floor + 1) / 2); // floors 1-2 => 1, 3-4 => 2, ...
+        int baseHp = 7 + Math.min(14, tier * 2);
+        int baseA1 = 2 + Math.min(4, floor / 2);
+        int baseA2 = 4 + Math.min(5, floor / 2);
 
-        int hp = 0, a1 = 0, a2 = 0, xp = 0;
-        String name = "";
+        // defaults (will be overwritten)
+        int hp = baseHp;
+        int a1 = baseA1;
+        int a2 = baseA2;
+        int xp = 3 + tier; // baseline XP; tune freely
+        String name;
+
+        int spd = 8, intel = 6, wil = 6;
+
+        int floorBoost = Math.min(6, floor / 2); // 0..6
 
         switch (t) {
             case SLIME -> {
                 name = "Slime";
-                hp = baseHp + 2;          // tanky
+                hp = baseHp + 2 + tier;          // tanky-ish
                 a1 = Math.max(1, baseA1 - 1);
-                a2 = Math.max(a1 + 1, baseA2 - 1);
-                xp = 3 + floor * 2;
+                a2 = Math.max(a1, baseA2 - 1);
+                xp = 3 + tier;
+
+                spd = 6 + floorBoost;
+                intel = 4 + floorBoost / 2;
+                wil = 10 + floorBoost;
             }
             case ZOMBIE -> {
                 name = "Zombie";
-                hp = baseHp + 5;          // very tanky
+                hp = baseHp + 4 + tier;
                 a1 = baseA1;
-                a2 = baseA2 + 1;          // heavier hits
-                xp = 5 + floor * 2;
+                a2 = baseA2;
+                xp = 4 + tier;
+
+                spd = 5 + floorBoost;
+                intel = 4 + floorBoost / 2;
+                wil = 12 + floorBoost;
             }
             case SKELETON -> {
                 name = "Skeleton";
-                hp = baseHp + 1;
-                a1 = baseA1;
-                a2 = baseA2;
-                xp = 6 + floor * 2;
+                hp = baseHp;
+                a1 = baseA1 + 1;
+                a2 = baseA2 + 1;
+                xp = 5 + tier;
+
+                spd = 9 + floorBoost;
+                intel = 6 + floorBoost / 2;
+                wil = 8 + floorBoost / 2;
             }
             case CULTIST -> {
                 name = "Cultist";
-                hp = Math.max(6, baseHp - 1);  // a bit squishier
-                a1 = baseA1 + 1;
-                a2 = baseA2 + 2;               // spikier
-                xp = 8 + floor * 2;
+                hp = baseHp - 1;
+                a1 = baseA1;
+                a2 = baseA2;
+                xp = 6 + tier;
+
+                spd = 8 + floorBoost;
+                intel = 12 + floorBoost;
+                wil = 9 + floorBoost / 2;
             }
             case GOBLIN -> {
                 name = "Goblin";
                 hp = baseHp;
                 a1 = baseA1;
                 a2 = baseA2;
-                xp = 4 + floor * 2;
+                xp = 4 + tier;
+
+                spd = 10 + floorBoost;
+                intel = 6 + floorBoost / 2;
+                wil = 7 + floorBoost / 2;
+            }
+            default -> {
+                name = "Foe";
             }
         }
-        
 
-        return new Enemy(t, name, x, y, hp, a1, a2, xp);
+        // final sanity (prevents weird negatives if you tune offsets later)
+        hp = Math.max(1, hp);
+        a1 = Math.max(1, a1);
+        a2 = Math.max(a1, a2);
+        xp = Math.max(1, xp);
+
+        return new Enemy(t, name, x, y, hp, a1, a2, xp, spd, intel, wil);
     }
 
     public int rollDamage(RNG rng) {
@@ -180,20 +217,42 @@ public final class Enemy extends Actor {
         trigEnemyAttack(battle);
 
         // 1) Player dodge check
-        if (Battle.rollDodge(rng, 12, battle.playerDodgePenaltyPct)) { // uses same base you set in Game, tune if desired
+        int dodgePen = Battle.applyWillVsSlowPenalty(rng, battle.playerDodgePenaltyPct, player.will(), battle.playerSlowTurns);
+
+        if (Battle.rollDodge(
+                rng,
+                12,
+                this.speed(),      // attacker speed
+                player.speed(),    // defender speed
+                dodgePen
+        )) {
             return name + " uses " + moveName + "... but you DODGE!";
         }
 
         // 2) Miss check (enemy moves can miss)
-        if (!Battle.rollHit(rng, acc, battle.foeAccuracyPenaltyPct)) {
+        int accPen = Battle.applyWillVsSlowPenalty(rng, battle.foeAccuracyPenaltyPct, this.will(), battle.foeSlowTurns);
+
+        if (!Battle.rollPhysicalHit(
+                rng,
+                acc,
+                this.speed(),
+                player.speed(),
+                accPen
+        )) {
             return missLine(moveName);
         }
 
         // 3) Apply effect / damage
         if (appliesSlow) {
-            battle.applyPlayerSlow(slowTurns, 30, 20);
+            boolean resisted = Battle.rollStatusResist(rng, this.intelligence(), player.will());
 
-            return name + " casts " + moveName + "! You are SLOWED!";
+            if (!resisted) {
+                int dur = slowTurns + (this.intelligence() / 10); // tiny scaling
+                battle.applyPlayerSlow(dur, 30, 20);
+                return name + " casts " + moveName + "! You are SLOWED!";
+            } else {
+                return name + " casts " + moveName + "... but you resist the curse!";
+            }
         }
 
         // Hit reaction

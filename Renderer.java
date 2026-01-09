@@ -6,6 +6,7 @@ import org.example.game.GameConfig;
 import org.example.world.Dungeon;
 import org.example.world.Tile;
 import org.example.entity.Chest;
+import org.example.world.WorldMap;
 
 import java.util.EnumMap;
 import java.util.Map;
@@ -129,8 +130,8 @@ public final class Renderer {
                 return;
             }
 
-        Dungeon d = game.dungeon();
-        if (d == null) return;
+            WorldMap map = game.activeMap();
+            if (map == null) return;
 
         int tile = GameConfig.TILE_SIZE;
         int uiTiles = GameConfig.UI_H_TILES;
@@ -139,8 +140,8 @@ public final class Renderer {
         int viewHpx = panelH - (uiTiles * tile);
         int uiY = viewHpx;
 
-        int worldWpx = d.w() * tile;
-        int worldHpx = d.h() * tile;
+        int worldWpx = map.w() * tile;
+        int worldHpx = map.h() * tile;
 
         int px = game.player().x * tile + tile / 2;
         int py = game.player().y * tile + tile / 2;
@@ -167,32 +168,34 @@ public final class Renderer {
 
         int minTx = Math.max(0, camX / tile);
         int minTy = Math.max(0, camY / tile);
-        int maxTx = Math.min(d.w() - 1, (camX + viewWpx) / tile + 1);
-        int maxTy = Math.min(d.h() - 1, (camY + viewHpx) / tile + 1);
+        int maxTx = Math.min(map.w() - 1, (camX + viewWpx) / tile + 1);
+        int maxTy = Math.min(map.h() - 1, (camY + viewHpx) / tile + 1);
 
         for (int y = minTy; y <= maxTy; y++) {
             for (int x = minTx; x <= maxTx; x++) {
-                boolean vis = d.isVisibleNow(x, y);
-                boolean seen = d.wasSeenEver(x, y);
+                boolean vis = map.isVisibleNow(x, y);
+                boolean seen = map.wasSeenEver(x, y);
                 if (!seen) continue;
 
-                Tile t = d.tile(x, y);
+                Tile t = map.tile(x, y);
                 drawTile(g, x, y, t, vis);
             }
         }
 
-        List<Enemy> enemies = game.enemies();
-        for (Enemy e : enemies) {
-            if (d.isVisibleNow(e.x, e.y)) {
-                drawEnemy(g, e.x, e.y);
-            }
-        }
 
-        for (Chest c : game.chests()) {
-            if (!c.opened && d.isVisibleNow(c.x, c.y)) {
-                drawChest(g, c.x, c.y);
+            if (game.zone() == Game.Zone.DUNGEON) {   // you may need to add a zone() getter
+                for (Enemy e : game.enemies()) {
+                    if (map.isVisibleNow(e.x, e.y)) drawEnemy(g, e.x, e.y);
+                }
+
+                for (Chest c : game.chests()) {
+                    if (!c.opened && map.isVisibleNow(c.x, c.y)) drawChest(g, c.x, c.y);
+                }
+
+                for (var gi : game.groundItems()) {
+                    if (map.isVisibleNow(gi.x, gi.y)) drawGroundItem(g, gi.x, gi.y, gi.type);
+                }
             }
-        }
 
         drawPlayer(g, game.player().x, game.player().y);
 
@@ -207,6 +210,7 @@ public final class Renderer {
                 "  HP " + game.player().hp + "/" + game.player().maxHp +
                 "  MP " + game.player().mp + "/" + game.player().maxMp +
                 "  EXP " + game.player().exp + "/" + game.player().expToNext +
+                "  Keys " + game.player().keyCount() +
                 "  Floor " + game.floor();
 
             int leftPad = 10;
@@ -242,6 +246,10 @@ public final class Renderer {
             if (raw != null && !raw.isBlank()) {
                 String logFit = ellipsize(g, raw, maxTextW);
                 g.drawString(logFit, leftPad, y2);
+            }
+            // LEVEL UP overlay (modal) drawn on top of dungeon UI
+            if (game.state() == Game.State.LEVEL_UP) {
+                drawLevelUpOverlay(g, game, panelW, panelH);
             }
 
             if (game.isDeathWipeActive()) {
@@ -291,6 +299,106 @@ public final class Renderer {
             g.fillRect(x + 4, y + 4, 1, 1);
             g.fillRect(x + 3, y + 5, 1, 1);
             g.fillRect(x + 2, y + 6, 1, 1);
+
+        } else if (t == Tile.LOCKED_DOOR) {
+            // Simple door: dark fill + bright border "planks"
+            g.setColor(Palette.GB0);
+            g.fillRect(x, y, s, s);
+
+            g.setColor(accent);
+            g.drawRect(x + 1, y + 1, s - 3, s - 3);
+
+            // vertical slats
+            g.fillRect(x + 3, y + 2, 1, s - 4);
+            g.fillRect(x + 5, y + 2, 1, s - 4);
+
+            // keyhole
+            g.setColor(base);
+            g.fillRect(x + 4, y + 4, 1, 2);
+
+        }
+
+        else if (t == Tile.DOOR) {
+            // Simple doorway marker (bright frame + dark opening)
+            g.setColor(Palette.GB0);
+            g.fillRect(x, y, s, s);
+
+            g.setColor(accent);
+            g.drawRect(x + 1, y + 1, s - 3, s - 3);
+
+            // opening
+            g.setColor(Palette.GB1);
+            g.fillRect(x + 3, y + 3, s - 6, s - 5);
+
+            // lintel
+            g.setColor(Palette.GB3);
+            g.fillRect(x + 2, y + 2, s - 4, 1);
+        }
+        else if (t == Tile.CRYPT_DOOR) {
+            // A slightly “spookier” door marker (thicker + symbol)
+            g.setColor(Palette.GB0);
+            g.fillRect(x, y, s, s);
+
+            g.setColor(Palette.GB3);
+            g.drawRect(x + 1, y + 1, s - 3, s - 3);
+
+            g.setColor(Palette.GB1);
+            g.fillRect(x + 2, y + 3, s - 4, s - 5);
+
+            // little “rune”
+            g.setColor(Palette.GB3);
+            g.fillRect(x + 4, y + 4, 1, 1);
+            g.fillRect(x + 3, y + 5, 3, 1);
+        }
+        else if (t == Tile.TOWN_PORTAL) {
+            // Portal: dark base + bright ring + glowing center
+            g.setColor(Palette.GB0);
+            g.fillRect(x, y, s, s);
+
+            // ring
+            g.setColor(accent);
+            g.fillRect(x + 2, y + 1, s - 4, 1);
+            g.fillRect(x + 2, y + s - 2, s - 4, 1);
+            g.fillRect(x + 1, y + 2, 1, s - 4);
+            g.fillRect(x + s - 2, y + 2, 1, s - 4);
+
+            // inner glow
+            g.setColor(base);
+            g.fillRect(x + 3, y + 3, s - 6, s - 6);
+
+            // core sparkle
+            g.setColor(accent);
+            g.fillRect(x + s/2, y + s/2, 1, 1);
+        }
+         else if (t == Tile.GRASS) {
+        // Grass: slightly brighter base when lit, with scattered blades
+        g.setColor(lit ? Palette.GB1 : Palette.GB0);
+        g.fillRect(x, y, s, s);
+
+        g.setColor(lit ? Palette.GB2 : Palette.GB1);
+        // simple "blade" specks (works well at 8x8 or 16x16 tiles)
+        g.fillRect(x + 1, y + 2, 1, 1);
+        g.fillRect(x + 4, y + 1, 1, 1);
+        g.fillRect(x + 6, y + 3, 1, 1);
+        g.fillRect(x + 2, y + 5, 1, 1);
+        g.fillRect(x + 5, y + 6, 1, 1);
+
+         } else if (t == Tile.PATH) {
+            // Path: dirt/stone look, with a border + a couple pebbles
+            g.setColor(lit ? Palette.GB1 : Palette.GB0);
+            g.fillRect(x, y, s, s);
+
+            // inner path fill
+            g.setColor(lit ? Palette.GB2 : Palette.GB1);
+            g.fillRect(x + 1, y + 1, s - 2, s - 2);
+
+            // subtle edge + pebbles
+            g.setColor(lit ? Palette.GB3 : Palette.GB2);
+            g.fillRect(x + 1, y + 1, s - 2, 1);         // top edge
+            g.fillRect(x + 1, y + s - 2, s - 2, 1);     // bottom edge
+            g.fillRect(x + 2, y + 4, 1, 1);
+            g.fillRect(x + 5, y + 5, 1, 1);
+
         }
     }
 
@@ -328,6 +436,42 @@ public final class Renderer {
         g.fillRect(x + 2, y + 2, 4, 1); // lid
         g.setColor(Palette.GB0);
         g.fillRect(x + 3, y + 4, 1, 1); // latch
+    }
+
+    private void drawGroundItem(Graphics2D g, int tx, int ty, org.example.item.ItemType type) {
+        int s = GameConfig.TILE_SIZE;
+        int x = tx * s;
+        int y = ty * s;
+
+        switch (type) {
+            case HP_POTION -> {
+                g.setColor(Palette.GB3);
+                g.fillRect(x + 3, y + 3, 2, 3);
+                g.setColor(Palette.GB1);
+                g.fillRect(x + 3, y + 2, 2, 1);
+            }
+            case MP_POTION -> {
+                g.setColor(Palette.GB2);
+                g.fillRect(x + 3, y + 3, 2, 3);
+                g.setColor(Palette.GB1);
+                g.fillRect(x + 3, y + 2, 2, 1);
+            }
+            case KEY -> {
+                // same icon you used for Tile.KEY
+                g.setColor(Palette.GB3);
+                // head
+                g.fillRect(x + 2, y + 3, 2, 2);
+                // shaft
+                g.fillRect(x + 4, y + 4, 2, 1);
+                // teeth
+                g.fillRect(x + 5, y + 5, 1, 1);
+                g.fillRect(x + 6, y + 5, 1, 1);
+            }
+            default -> {
+                g.setColor(Palette.GB3);
+                g.fillRect(x + 3, y + 3, 1, 1);
+            }
+        }
     }
 
     private void drawBattle(Graphics2D g, Game game, int panelW, int panelH) {
@@ -513,7 +657,7 @@ public final class Renderer {
 
 // slow flicker (toggle every ~200ms)
         boolean flickerOn = true;
-        float flickerAlpha = 8f;
+        float flickerAlpha = 1f;
         if (lowHp) {
             flickerOn = ((now / 200) % 2) == 0;
             // Instead of totally disappearing, dim it on "off" frames
@@ -711,37 +855,73 @@ public final class Renderer {
             int n = spells.size();
 
             int lineH = 14;
-            int baseY = Math.max(menuBoxY + 14, menuBoxY + 18);
+
+            // Inside-menu padding + footer reservation
+            int listX = menuBoxX + 6;              // left text margin inside box
+            int listTopY = menuBoxY + 18;          // first row baseline
+            int footerY = menuBoxY + menuBoxH - 6; // ALWAYS bottom of menu box
+
+            int footerReserve = 18; // keep space so list never hits footer
+            int availH = (menuBoxY + menuBoxH - footerReserve) - listTopY;
+            int visibleRows = Math.max(1, availH / lineH);
 
             if (n == 0) {
-                g.drawString("No spells known.", tile, baseY);
+                g.drawString("No spells known.", listX, listTopY);
                 g.setFont(pixel(8f));
-                g.drawString("ESC back", tile, menuBoxY + Math.min(menuBoxH - 6, baseY + 20));
+                g.drawString("ESC back", listX, footerY);
                 return;
             }
 
+            // Clamp selection
             int sel = b.spellIndex;
-            if (sel < 0) sel = 0;
-            if (sel >= n) sel = n - 1;
+            sel = Math.max(0, Math.min(sel, n - 1));
 
-            for (int i = 0; i < n; i++) {
+            // Compute a scroll window so the selected row stays visible
+            int maxScroll = Math.max(0, n - visibleRows);
+            int scroll = sel - (visibleRows / 2);
+            scroll = Math.max(0, Math.min(scroll, maxScroll));
+
+            // Clip to menu box interior so text can NEVER draw outside
+            Shape oldClip = g.getClip();
+            g.setClip(menuBoxX + 2, menuBoxY + 2, menuBoxW - 4, menuBoxH - 4);
+
+            // Tiny scroll indicators (GB-style)
+            int indX = menuBoxX + menuBoxW - 14;
+            int indTopY = listTopY - 6;
+            int indBotY = listTopY + (visibleRows - 1) * lineH + 6;
+
+            boolean hasAbove = scroll > 0;
+            boolean hasBelow = (scroll + visibleRows) < n;
+
+            g.setFont(pixelBold(8f));
+            g.setColor(Palette.GB3);
+            if (hasAbove) g.drawString("^", indX, indTopY);
+            if (hasBelow) g.drawString("v", indX, indBotY);
+
+            // Draw only visible rows
+            g.setFont(pixel(8f));
+            for (int row = 0; row < visibleRows; row++) {
+                int i = scroll + row;
+                if (i >= n) break;
+
                 var sp = spells.get(i);
 
-                String label = switch (sp) {
-                    case MAGIC_STAB   -> "Magic Stab   (-3 MP) dmg";
-                    case ICE_SHARD    -> "Ice Shard    (-5 MP) dmg + slow";
-                    case FLASH_FREEZE -> "Flash Freeze (-6 MP) freeze";
-                    case FIRE_SWORD   -> "Fire Sword   (-5 MP) buff (battle)";
-                    case HEAL         -> "Heal         (-7 MP) +15 HP";
-                };
+                // ✅ Use the same label logic as Inventory (includes dmg range)
+                String label = game.spellLabel(sp);
 
                 String prefix = (i == sel) ? "> " : "  ";
-                g.drawString(prefix + label, tile, baseY + i * lineH);
+
+                // Keep text inside the menu box (leave room for scroll indicator on the right)
+                int maxW = menuBoxW - 28; // tweak 24..32 if you want more/less margin
+                g.drawString(ellipsize(g, prefix + label, maxW), listX, listTopY + row * lineH);
             }
 
+            // Restore clip
+            g.setClip(oldClip);
+
+            // Footer: anchored to bottom of menu box (never overlaps list)
             g.setFont(pixel(8f));
-            g.drawString("←/→ select   ENTER cast   ESC back", tile,
-                    menuBoxY + Math.min(menuBoxH - 6, baseY + n * lineH + 10));
+            g.drawString("←/→ select   ENTER cast   ESC back", listX, footerY);
         }
 
     }
@@ -776,41 +956,49 @@ public final class Renderer {
         g.fillRect(0, 0, panelW, panelH);
 
         var p = game.player();
-        int page = game.invPage();
+        int page = game.invPage(); // 0=ITEMS, 1=SPELLS, 2=STATS
 
-        // Header
+        // =========================
+        // HEADER + TABS (EVEN)
+        // =========================
         g.setColor(Palette.GB3);
         g.setFont(pixelBold(8f));
 
         int headerX = 20;
         int headerY = 32;
 
-        String left = "INVENTORY  ";
-        String itemsTab  = (page == 0) ? "[ITEMS]" : "ITEMS";
-        String spellsTab = (page == 1) ? "[SPELLS]" : "SPELLS";
+        String left = "INVENTORY";
+        String[] tabs = new String[] {
+                (page == 0) ? "[ITEMS]"  : "ITEMS",
+                (page == 1) ? "[SPELLS]" : "SPELLS",
+                (page == 2) ? "[STATS]"  : "STATS"
+        };
+
+        FontMetrics hfm = g.getFontMetrics();
 
         g.drawString(left, headerX, headerY);
 
-        FontMetrics hfm = g.getFontMetrics();
-        int tabsX = headerX + hfm.stringWidth(left);
+        int xTabs = headerX + hfm.stringWidth(left) + hfm.stringWidth("  ");
+        int gapW = hfm.stringWidth("  "); // two spaces
 
-// draw tabs
-        g.drawString(itemsTab, tabsX, headerY);
-        int afterItemsX = tabsX + hfm.stringWidth(itemsTab) + hfm.stringWidth("  ");
-        g.drawString("  " + spellsTab, tabsX + hfm.stringWidth(itemsTab), headerY);
+        int[] tabX = new int[3];
+        int[] tabW = new int[3];
 
-// underline bar under selected tab (tiny GB-style)
+        int x = xTabs;
+        for (int i = 0; i < 3; i++) {
+            tabX[i] = x;
+            tabW[i] = hfm.stringWidth(tabs[i]);
+            g.drawString(tabs[i], x, headerY);
+            x += tabW[i] + gapW;
+        }
+
         int underlineH = 2;
-        int underlineY = headerY + 3; // a few pixels under text baseline
+        int underlineY = headerY + 3;
+        g.fillRect(tabX[page], underlineY, tabW[page], underlineH);
 
-        int selX = (page == 0) ? tabsX : afterItemsX;
-        String selTab = (page == 0) ? itemsTab : spellsTab;
-        int selW = hfm.stringWidth(selTab);
-
-        g.setColor(Palette.GB3);
-        g.fillRect(selX, underlineY, selW, underlineH);
-
-        // Layout constants
+        // =========================
+        // COMMON LAYOUT CONSTANTS
+        // =========================
         int leftX = 20;
         int topY = 50;
 
@@ -818,26 +1006,107 @@ public final class Renderer {
         int leftBoxX = leftX;
         int rightBoxX = leftX + boxW + 20;
 
+        // Footer reserved space so content never overlaps controls
+        int footerH = 40;
+        int footerPad = 10;
+
+        // =========================
+        // STATS PAGE: 2 COLUMNS ONLY
+        // =========================
+        if (page == 2) {
+            int contentH = panelH - topY - footerH - footerPad;
+            contentH = Math.max(160, contentH);
+
+            // Two tall columns
+            drawInvBox(g, leftBoxX, topY, boxW, contentH);
+            drawInvBox(g, rightBoxX, topY, boxW, contentH);
+
+            // Titles
+            g.setFont(pixelBold(8f));
+            g.setColor(Palette.GB3);
+            g.drawString("SUMMARY", leftBoxX + 8, topY + 18);
+            g.drawString("PLAYER STATS", rightBoxX + 8, topY + 18);
+
+            g.setFont(pixel(8f));
+            int lineH = 16;
+
+            // LEFT COLUMN: valuable summary
+            int lx = leftBoxX + 8;
+            int ly = topY + 38;
+
+            g.drawString("LV " + p.level + "  FLOOR " + game.floor(), lx, ly);
+            ly += lineH;
+            g.drawString("EXP " + p.exp + "/" + p.expToNext, lx, ly);
+            ly += lineH;
+            g.drawString("Keys: " + p.keyCount(), lx, ly);
+            ly += lineH;
+
+            ly += lineH / 2;
+
+            // Extra useful combat info
+
+            String baseAtk = p.getBaseAtkMin() + "-" + p.getBaseAtkMax();
+            g.drawString("Base ATK: " + baseAtk, lx, ly);
+            ly += lineH;
+
+            String totalAtk = p.atkMin + "-" + p.atkMax;
+            g.drawString("Total ATK: " + totalAtk, lx, ly);
+            ly += lineH;
+
+            // RIGHT COLUMN: full current stats
+            int rx = rightBoxX + 8;
+            int ry = topY + 38;
+
+            g.drawString("HP  " + p.hp + "/" + p.maxHp, rx, ry);
+            ry += lineH;
+            g.drawString("MP  " + p.mp + "/" + p.maxMp, rx, ry);
+            ry += lineH;
+            g.drawString("ATK " + p.atkMin + "-" + p.atkMax, rx, ry);
+            ry += lineH;
+
+            ry += lineH / 2;
+
+            g.drawString("SPD " + p.speed(), rx, ry);
+            ry += lineH;
+            g.drawString("WIL " + p.will(), rx, ry);
+            ry += lineH;
+            g.drawString("INT " + p.intelligence(), rx, ry);
+            ry += lineH;
+
+            // Footer (no list box on STATS)
+            g.setFont(pixel(8f));
+            int footerY = topY + contentH + footerPad + 16;
+            footerY = Math.min(footerY, panelH - 12);
+            g.drawString("←/→ tabs   ESC close", leftX + 8, footerY);
+
+            return; // IMPORTANT: prevents the ITEMS/SPELLS list UI from drawing
+        }
+
+        // =========================
+        // ITEMS/SPELLS PAGES (EXISTING STRUCTURE)
+        // =========================
         int topBoxH = 90;
         int listBoxY = topY + topBoxH + 16;
-        int listBoxH = panelH - listBoxY - 50;
+
+        int listBoxH = panelH - listBoxY - footerH - footerPad;
+        listBoxH = Math.max(120, listBoxH);
 
         // Draw top boxes
         drawInvBox(g, leftBoxX, topY, boxW, topBoxH);
         drawInvBox(g, rightBoxX, topY, boxW, topBoxH);
 
-        // LEFT TOP: equipment/spells title
+        // TOP TITLES
         g.setFont(pixelBold(8f));
-        g.drawString(page == 0 ? "EQUIPPED" : "KNOWN SPELLS", leftBoxX + 8, topY + 18);
+        g.setColor(Palette.GB3);
 
-        // RIGHT TOP: stats title
-        g.setFont(pixelBold(8f));
+        if (page == 0) g.drawString("EQUIPPED", leftBoxX + 8, topY + 18);
+        else          g.drawString("KNOWN SPELLS", leftBoxX + 8, topY + 18);
+
         g.drawString("STATS", rightBoxX + 8, topY + 18);
 
-        // Compute preview stats based on selection
+        // Preview stats based on selection
         int previewAtkMin = p.atkMin;
         int previewAtkMax = p.atkMax;
-
         int previewHp = p.hp;
         int previewMp = p.mp;
 
@@ -845,7 +1114,6 @@ public final class Renderer {
             // Preview if selected item is a sword
             java.util.List<org.example.item.ItemType> items = p.inv.nonEmptyTypes();
             int n = items.size();
-
             if (n > 0) {
                 int sel = game.invIndex();
                 sel = Math.max(0, Math.min(sel, n - 1));
@@ -869,7 +1137,7 @@ public final class Renderer {
                     previewAtkMax = p.getBaseAtkMax() + bMax;
                 }
             }
-        } else {
+        } else if (page == 1) {
             // Spell preview: show post-cast MP and post-heal HP for HEAL
             java.util.List<org.example.entity.Player.SpellType> spells = p.knownSpellsInOrder();
             int n = spells.size();
@@ -884,29 +1152,38 @@ public final class Renderer {
                 if (sp == org.example.entity.Player.SpellType.HEAL) {
                     previewHp = Math.min(p.maxHp, p.hp + 15);
                 }
+
+                if (sp == org.example.entity.Player.SpellType.FIRE_SWORD) {
+                    previewAtkMin = p.atkMin + 6;
+                    previewAtkMax = p.atkMax + 9;
+                }
             }
         }
 
         // LEFT TOP CONTENT
         g.setFont(pixel(8f));
+        g.setColor(Palette.GB3);
 
         if (page == 0) {
-            // Equipment
             String wep = "Weapon: " + p.getWeaponName();
             g.drawString(ellipsize(g, wep, boxW - 16), leftBoxX + 8, topY + 38);
-
             g.drawString("LV " + p.level + "  EXP " + p.exp + "/" + p.expToNext, leftBoxX + 8, topY + 56);
-
         } else {
-            // Spell summary
-            int known = p.knownSpellsInOrder().size();
+            java.util.List<org.example.entity.Player.SpellType> spells = p.knownSpellsInOrder();
+            int known = spells.size();
             g.drawString("Spells known: " + known, leftBoxX + 8, topY + 38);
-            g.drawString("Cast in battle only", leftBoxX + 8, topY + 56);
+
+            String usageLine = "Cast in battle only";
+            if (known > 0) {
+                int sel = game.spellIndex();
+                sel = Math.max(0, Math.min(sel, known - 1));
+                var selected = spells.get(sel);
+                usageLine = game.spellUsageText(selected);
+            }
+            g.drawString(ellipsize(g, usageLine, boxW - 16), leftBoxX + 8, topY + 56);
         }
 
-        // RIGHT TOP CONTENT (collapse: show only stats that change; if none change, show all current)
-        g.setFont(pixel(8f));
-
+        // RIGHT TOP CONTENT (preview changes)
         String hpCur  = p.hp + "/" + p.maxHp;
         String hpPrev = previewHp + "/" + p.maxHp;
 
@@ -921,8 +1198,8 @@ public final class Renderer {
         boolean atkChanged = (previewAtkMin != p.atkMin || previewAtkMax != p.atkMax);
 
         int statMaxW = boxW - 16;
-        int x = rightBoxX + 8;
-        int y = topY + 38;
+        int sx = rightBoxX + 8;
+        int sy = topY + 38;
         int statLineH = 18;
 
         java.util.ArrayList<String> lines = new java.util.ArrayList<>();
@@ -931,20 +1208,18 @@ public final class Renderer {
         if (mpChanged)  lines.add("MP  " + mpCur + " > " + mpPrev);
         if (atkChanged) lines.add("ATK " + atkCur + " > " + atkPrev);
 
-// If nothing would change, show normal current stats
         if (lines.isEmpty()) {
             lines.add("HP  " + hpCur);
             lines.add("MP  " + mpCur);
             lines.add("ATK " + atkCur);
         }
 
-// draw collapsed list
-        for (String s : lines) {
-            g.drawString(ellipsize(g, s, statMaxW), x, y);
-            y += statLineH;
+        for (String sLine : lines) {
+            g.drawString(ellipsize(g, sLine, statMaxW), sx, sy);
+            sy += statLineH;
         }
 
-        // LIST AREA BOX
+        // LIST AREA BOX (ITEMS / SPELLS)
         drawInvBox(g, leftX, listBoxY, panelW - 40, listBoxH);
 
         g.setFont(pixelBold(8f));
@@ -956,6 +1231,16 @@ public final class Renderer {
 
         int visible = game.invVisibleRows();
 
+        // Clip list rendering to inside the list box
+        Shape oldClip = g.getClip();
+        int clipX = leftX + 2;
+        int clipY = listBoxY + 22;
+        int clipW = (panelW - 40) - 4;
+        int clipH = listBoxH - 26;
+        g.setClip(clipX, clipY, clipW, clipH);
+
+        g.setFont(pixel(8f));
+
         if (page == 0) {
             java.util.List<org.example.item.ItemType> items = p.inv.nonEmptyTypes();
             int n = items.size();
@@ -966,57 +1251,9 @@ public final class Renderer {
                 int sel = Math.max(0, Math.min(game.invIndex(), n - 1));
                 int scroll = Math.max(0, Math.min(game.invScroll(), Math.max(0, n - visible)));
 
-                // --- tiny scroll indicators (GB style) ---
-                int boxX = leftX;
-                int boxY = listBoxY;         // (boxY not used but fine)
+                // scroll indicators
                 int listBoxW = panelW - 40;
-
-                int indX = boxX + listBoxW - 14;     // near right edge
-                int indTopY = listY - 6;         // just above first row
-                int indBotY = listY + (visible - 1) * lineH + 6; // just below last row
-
-                g.setFont(pixelBold(8f));
-                g.setColor(Palette.GB3);
-
-                boolean hasAbove = scroll > 0;
-                boolean hasBelow = (scroll + visible) < n;
-
-                if (hasAbove) g.drawString("^", indX, indTopY);
-                if (hasBelow) g.drawString("v", indX, indBotY);
-
-                g.setFont(pixel(8f)); // restore
-
-                for (int row = 0; row < visible; row++) {
-                    int i = scroll + row;
-                    if (i >= n) break;
-
-                    var it = items.get(i);
-                    String label = game.itemLabel(it);
-
-                    String prefix = (i == sel) ? "> " : "  ";
-                    g.drawString(prefix + ellipsize(g, label, panelW - 80), listX, listY + row * lineH);
-                }
-            }
-
-            g.setFont(pixel(8f));
-            g.drawString("←/→ tabs   ↑/↓ select   ENTER use/equip   ESC close", leftX + 8, panelH - 24);
-
-        } else {
-            java.util.List<org.example.entity.Player.SpellType> spells = p.knownSpellsInOrder();
-            int n = spells.size();
-
-            if (n == 0) {
-                g.drawString("(no spells known)", listX, listY);
-            } else {
-                int sel = Math.max(0, Math.min(game.spellIndex(), n - 1));
-                int scroll = Math.max(0, Math.min(game.spellScroll(), Math.max(0, n - visible)));
-
-                // --- tiny scroll indicators (GB style) ---
-                int boxX = leftX;
-                int boxY = listBoxY;
-                int listBoxW = panelW - 40;
-
-                int indX = boxX + listBoxW - 14;
+                int indX = leftX + listBoxW - 14;
                 int indTopY = listY - 6;
                 int indBotY = listY + (visible - 1) * lineH + 6;
 
@@ -1029,23 +1266,177 @@ public final class Renderer {
                 if (hasAbove) g.drawString("^", indX, indTopY);
                 if (hasBelow) g.drawString("v", indX, indBotY);
 
-                g.setFont(pixel(8f)); // restore
+                g.setFont(pixel(8f));
+                for (int row = 0; row < visible; row++) {
+                    int i = scroll + row;
+                    if (i >= n) break;
 
+                    var it = items.get(i);
+                    String label = game.itemLabel(it);
+                    String prefix = (i == sel) ? "> " : "  ";
+                    g.drawString(prefix + ellipsize(g, label, panelW - 80), listX, listY + row * lineH);
+                }
+            }
+
+        } else { // page == 1
+            java.util.List<org.example.entity.Player.SpellType> spells = p.knownSpellsInOrder();
+            int n = spells.size();
+
+            if (n == 0) {
+                g.drawString("(no spells known)", listX, listY);
+            } else {
+                int sel = Math.max(0, Math.min(game.spellIndex(), n - 1));
+                int scroll = Math.max(0, Math.min(game.spellScroll(), Math.max(0, n - visible)));
+
+                // scroll indicators
+                int listBoxW = panelW - 40;
+                int indX = leftX + listBoxW - 14;
+                int indTopY = listY - 6;
+                int indBotY = listY + (visible - 1) * lineH + 6;
+
+                g.setFont(pixelBold(8f));
+                g.setColor(Palette.GB3);
+
+                boolean hasAbove = scroll > 0;
+                boolean hasBelow = (scroll + visible) < n;
+
+                if (hasAbove) g.drawString("^", indX, indTopY);
+                if (hasBelow) g.drawString("v", indX, indBotY);
+
+                g.setFont(pixel(8f));
                 for (int row = 0; row < visible; row++) {
                     int i = scroll + row;
                     if (i >= n) break;
 
                     var sp = spells.get(i);
                     String label = game.spellLabel(sp);
-
                     String prefix = (i == sel) ? "> " : "  ";
                     g.drawString(prefix + ellipsize(g, label, panelW - 80), listX, listY + row * lineH);
                 }
             }
-
-            g.setFont(pixel(8f));
-            g.drawString("←/→ tabs   ↑/↓ select   (preview on right)   ESC close", leftX + 8, panelH - 24);
         }
+
+        // restore clip for footer
+        g.setClip(oldClip);
+
+        // Footer
+        g.setFont(pixel(8f));
+        int footerY = listBoxY + listBoxH + footerPad + 16;
+        footerY = Math.min(footerY, panelH - 12);
+
+        g.drawString("←/→ tabs   ↑/↓ select   ENTER use/equip   ESC close", leftX + 8, footerY);
+    }
+
+    private void drawLevelUpOverlay(Graphics2D g, Game game, int panelW, int panelH) {
+
+        var p = game.player();
+        int tile = GameConfig.TILE_SIZE;
+
+        // Dim background
+        Composite old = g.getComposite();
+        g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.70f));
+        g.setColor(Palette.GB0);
+        g.fillRect(0, 0, panelW, panelH);
+        g.setComposite(old);
+
+        // Modal box
+        int boxW = Math.min(panelW - 40, tile * 60);
+        int boxH = Math.min(panelH - 40, tile * 34);
+        int x = (panelW - boxW) / 2;
+        int y = (panelH - boxH) / 2;
+
+        g.setColor(Palette.GB0);
+        g.fillRect(x, y, boxW, boxH);
+        g.setColor(Palette.GB3);
+        g.drawRect(x, y, boxW, boxH);
+
+        g.setFont(pixelBold(8f));
+        int pad = 10;
+        int cx = x + pad;
+        int cy = y + 18;
+
+        g.drawString("LEVEL UP", cx, cy);
+
+        g.setFont(pixel(8f));
+        cy += 16;
+
+        // Basic info
+        g.drawString("LV " + p.level + "   EXP " + p.exp + "/" + p.expToNext, cx, cy);
+        cy += 14;
+
+        // Compute preview based on current selection (only meaningful on stage 1)
+        int stage = game.levelUpStage();
+        int statSel = game.levelUpStatIndex(); // 0..5 now
+
+        boolean previewHP    = (stage == 1 && statSel == 0);
+        boolean previewMP    = (stage == 1 && statSel == 1);
+        boolean previewATK   = (stage == 1 && statSel == 2);
+        boolean previewSPD   = (stage == 1 && statSel == 3);
+        boolean previewWILL  = (stage == 1 && statSel == 4);
+        boolean previewINT   = (stage == 1 && statSel == 5);
+
+        int maxHpPreview = p.maxHp + (previewHP ? 4 : 0);
+        int maxMpPreview = p.maxMp + (previewMP ? 2 : 0);
+
+        int baseMin = p.getBaseAtkMin() + (previewATK ? 1 : 0);
+        int baseMax = p.getBaseAtkMax() + (previewATK ? 1 : 0);
+        int atkMinPreview = baseMin + p.getWeaponBonusMin();
+        int atkMaxPreview = baseMax + p.getWeaponBonusMax();
+
+        int spdPreview  = p.speed() + (previewSPD ? 1 : 0);
+        int willPreview = p.will() + (previewWILL ? 1 : 0);
+        int intPreview  = p.intelligence() + (previewINT ? 1 : 0);
+
+        // Show stats with live preview arrows
+        String hpLine   = "HP MAX: " + p.maxHp + (previewHP ? " -> " + maxHpPreview : "");
+        String mpLine   = "MP MAX: " + p.maxMp + (previewMP ? " -> " + maxMpPreview : "");
+        String atkLine  = "ATK: " + p.atkMin + "-" + p.atkMax + (previewATK ? " -> " + atkMinPreview + "-" + atkMaxPreview : "");
+        String spdLine  = "SPEED: " + p.speed() + (previewSPD ? " -> " + spdPreview : "");
+        String willLine = "WILL:  " + p.will() + (previewWILL ? " -> " + willPreview : "");
+        String intLine  = "INTEL: " + p.intelligence() + (previewINT ? " -> " + intPreview : "");
+
+        g.drawString(hpLine, cx, cy);   cy += 14;
+        g.drawString(mpLine, cx, cy);   cy += 14;
+        g.drawString(atkLine, cx, cy);  cy += 14;
+        g.drawString(spdLine, cx, cy);  cy += 14;
+        g.drawString(willLine, cx, cy); cy += 14;
+        g.drawString(intLine, cx, cy);  cy += 14;
+
+        // Divider
+        cy += 6;
+        g.drawLine(x + 8, cy, x + boxW - 8, cy);
+        cy += 14;
+
+        // Stage 0: YES/NO confirm
+        if (stage == 0) {
+            g.setFont(pixel(8f));
+            g.drawString("Level up now?", cx, cy);
+            cy += 16;
+
+            int yn = game.levelUpYesNoIndex();
+            String yes = (yn == 0) ? "> YES" : "  YES";
+            String no  = (yn == 1) ? "> NO"  : "  NO";
+
+            g.drawString(yes, cx, cy); cy += 14;
+            g.drawString(no,  cx, cy); cy += 18;
+
+            g.drawString("↑/↓ choose   ENTER confirm", cx, y + boxH - 12);
+            return;
+        }
+
+        // Stage 1: stat selection (6 choices)
+        g.setFont(pixel(8f));
+        g.drawString("Choose a stat:", cx, cy);
+        cy += 16;
+
+        String[] stats = {"HP", "MP", "ATK", "SPEED", "WILL", "INT"};
+        for (int i = 0; i < stats.length; i++) {
+            String prefix = (i == statSel) ? "> " : "  ";
+            g.drawString(prefix + stats[i], cx, cy);
+            cy += 14;
+        }
+
+        g.drawString("↑/↓ choose   ENTER apply   ESC back", cx, y + boxH - 12);
     }
 
     private void drawInvBox(Graphics2D g, int x, int y, int w, int h) {
