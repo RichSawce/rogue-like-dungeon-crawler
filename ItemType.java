@@ -19,6 +19,13 @@ public enum ItemType {
     TOME_FIRE_SWORD,
     TOME_HEAL,
 
+    // physical move tomes (consumed to learn)
+    TOME_SMASH,
+    TOME_LUNGE,
+    TOME_PARRY,
+    TOME_SWEEP,
+
     KEY,
-    TOWN_PORTAL
+    TOWN_PORTAL,
+    GOLD
 }

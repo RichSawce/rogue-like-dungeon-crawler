@@ -6,5 +6,6 @@ public enum BuildingType {
     MAGIC_SHOP,
     QUEST_HOUSE_1,
     QUEST_HOUSE_2,
+    HOUSE,
     CRYPT
 }

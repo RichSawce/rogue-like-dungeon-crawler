@@ -12,7 +12,7 @@ public final class BuildingGenerator {
         this.rng = rng;
     }
 
-    public Dungeon generateInterior() {
+    public Dungeon generateInterior(BuildingType type) {
         final int W = 21;
         final int H = 15;
 
@@ -105,6 +105,7 @@ public final class BuildingGenerator {
         d.setTile(doorX, doorY, Tile.DOOR);
         d.setTile(startX, startY, Tile.FLOOR);
         d.setStart(startX, startY);
+        spawnNpcForBuilding(type, d, rooms);
         return d;
     }
 
@@ -173,5 +174,49 @@ public final class BuildingGenerator {
 
     private int clamp(int v, int lo, int hi) {
         return Math.max(lo, Math.min(v, hi));
+    }
+
+    private void spawnNpcForBuilding(BuildingType type, Dungeon d, List<Rect> rooms) {
+        NpcType npcType = switch (type) {
+            case MAGIC_SHOP -> NpcType.SHOPKEEPER_ITEMS;      // your “Item shop”
+            case WEAPON_SHOP -> NpcType.BLACKSMITH_WEAPONS;
+            case INN -> NpcType.INNKEEPER;
+            default -> null;
+        };
+
+        if (npcType == null) return;
+
+        String name = switch (npcType) {
+            case SHOPKEEPER_ITEMS -> "Shopkeeper";
+            case BLACKSMITH_WEAPONS -> "Blacksmith";
+            case INNKEEPER -> "Innkeeper";
+        };
+
+        int[] pos = pickNpcSpawnTile(d, rooms);
+        d.addNpc(new Npc(npcType, name, pos[0], pos[1]));
+    }
+
+    private int[] pickNpcSpawnTile(Dungeon d, List<Rect> rooms) {
+        // Prefer the LAST room (feels like “behind the counter” / back of building)
+        Rect r = rooms.get(rooms.size() - 1);
+
+        for (int tries = 0; tries < 200; tries++) {
+            int x = r.x + 1 + rng.nextInt(Math.max(1, r.w - 2));
+            int y = r.y + 1 + rng.nextInt(Math.max(1, r.h - 2));
+
+            // Needs a walkable floor tile and not the start tile
+            if (!d.isWalkable(x, y)) continue;
+
+            int[] start = d.getStart();
+            if (x == start[0] && y == start[1]) continue;
+
+            // Don’t spawn on the door tile either (door is at border in your interiors)
+            if (d.tile(x, y) == Tile.DOOR) continue;
+
+            return new int[]{x, y};
+        }
+
+        // Fallback: center of last room
+        return new int[]{ r.cx(), r.cy() };
     }
 }

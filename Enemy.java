@@ -134,6 +134,17 @@ public final class Enemy extends Actor {
         return new Enemy(t, name, x, y, hp, a1, a2, xp, spd, intel, wil);
     }
 
+    public int goldDrop() {
+        // 2-5 gold based on type
+        return switch (type) {
+            case GOBLIN -> 2 + (int)(Math.random() * 4); // 2-5
+            case SKELETON -> 3 + (int)(Math.random() * 3); // 3-5
+            case SLIME -> 2 + (int)(Math.random() * 3); // 2-4
+            case ZOMBIE -> 3 + (int)(Math.random() * 3); // 3-5
+            case CULTIST -> 4 + (int)(Math.random() * 2); // 4-5
+        };
+    }
+
     public int rollDamage(RNG rng) {
         return rng.range(atkMin, atkMax);
     }
@@ -166,6 +177,11 @@ public final class Enemy extends Actor {
     // ----------------------------
     public String performBattleMove(RNG rng, Player player, Battle battle) {
 
+        // ✅ NEW: Check if player is parrying
+        if (battle.parryActive) {
+            battle.parryActive = false;
+            return "The " + name + " attacks... but you parry it perfectly!";
+        }
         // Decide move per type
         String moveName;
         int acc;

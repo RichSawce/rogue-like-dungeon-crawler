@@ -3,16 +3,21 @@ package org.example.ui;
 import org.example.entity.Enemy;
 import org.example.game.Game;
 import org.example.game.GameConfig;
+import org.example.game.ShopItem;  // ADD THIS
+import org.example.item.ItemType;
 import org.example.world.Dungeon;
 import org.example.world.Tile;
 import org.example.entity.Chest;
 import org.example.world.WorldMap;
+import org.example.world.Npc;      // ADD THIS
 
 import java.util.EnumMap;
 import java.util.Map;
 import java.io.InputStream;
 import java.awt.*;
 import java.util.List;
+
+import static org.example.item.ItemType.*;
 
 public final class Renderer {
 
@@ -183,7 +188,7 @@ public final class Renderer {
         }
 
 
-            if (game.zone() == Game.Zone.DUNGEON) {   // you may need to add a zone() getter
+            if (game.zone() == Game.Zone.DUNGEON) {
                 for (Enemy e : game.enemies()) {
                     if (map.isVisibleNow(e.x, e.y)) drawEnemy(g, e.x, e.y);
                 }
@@ -194,6 +199,18 @@ public final class Renderer {
 
                 for (var gi : game.groundItems()) {
                     if (map.isVisibleNow(gi.x, gi.y)) drawGroundItem(g, gi.x, gi.y, gi.type);
+                }
+            }
+
+// Draw NPCs in buildings
+            if (game.zone() == Game.Zone.BUILDING) {
+                Dungeon bldg = game.building();
+                if (bldg != null) {
+                    for (var npc : bldg.npcs()) {
+                        if (map.isVisibleNow(npc.x, npc.y)) {
+                            drawNpc(g, npc.x, npc.y);
+                        }
+                    }
                 }
             }
 
@@ -247,6 +264,10 @@ public final class Renderer {
                 String logFit = ellipsize(g, raw, maxTextW);
                 g.drawString(logFit, leftPad, y2);
             }
+            // NPC DIALOGUE overlay (modal) drawn on top of dungeon UI
+            if (game.state() == Game.State.NPC_DIALOGUE) {
+                drawNpcDialogueBox(g, game, panelW, panelH);
+            }
             // LEVEL UP overlay (modal) drawn on top of dungeon UI
             if (game.state() == Game.State.LEVEL_UP) {
                 drawLevelUpOverlay(g, game, panelW, panelH);
@@ -299,6 +320,19 @@ public final class Renderer {
             g.fillRect(x + 4, y + 4, 1, 1);
             g.fillRect(x + 3, y + 5, 1, 1);
             g.fillRect(x + 2, y + 6, 1, 1);
+
+        } else if (t == Tile.STAIRS_UP) {
+            g.setColor(Palette.GB0);
+            g.fillRect(x, y, s, s);
+
+            g.setColor(accent);
+            // “up” diagonal (mirrors your down look)
+            g.fillRect(x + 2, y + 6, 1, 1);
+            g.fillRect(x + 3, y + 5, 1, 1);
+            g.fillRect(x + 4, y + 4, 1, 1);
+            g.fillRect(x + 3, y + 3, 1, 1);
+            g.fillRect(x + 2, y + 2, 1, 1);
+
 
         } else if (t == Tile.LOCKED_DOOR) {
             // Simple door: dark fill + bright border "planks"
@@ -472,6 +506,21 @@ public final class Renderer {
                 g.fillRect(x + 3, y + 3, 1, 1);
             }
         }
+    }
+
+    private void drawNpc(Graphics2D g, int tx, int ty) {
+        int s = GameConfig.TILE_SIZE;
+        int x = tx * s;
+        int y = ty * s;
+
+        // Simple NPC sprite (friendly character)
+        g.setColor(Palette.GB3);
+        g.fillRect(x + 2, y + 2, 4, 4);
+        g.setColor(Palette.GB2);
+        g.fillRect(x + 3, y + 3, 2, 2);
+        // Add a small marker to distinguish from player
+        g.setColor(Palette.GB1);
+        g.fillRect(x + 3, y + 2, 2, 1);
     }
 
     private void drawBattle(Graphics2D g, Game game, int panelW, int panelH) {
@@ -790,7 +839,7 @@ public final class Renderer {
 
         // ---- What we draw inside the MENU frame depends on phase ----
         if (b.phase == org.example.game.Battle.Phase.PLAYER_MENU) {
-            String[] opts = {"FIGHT", "SPELL", "ITEM", "RUN"};
+            String[] opts = {"MOVE", "SPELL", "ITEM", "RUN"};
             int lineH = 14;
 
             int baseY = menuBoxY + 18;
@@ -922,8 +971,87 @@ public final class Renderer {
             // Footer: anchored to bottom of menu box (never overlaps list)
             g.setFont(pixel(8f));
             g.drawString("←/→ select   ENTER cast   ESC back", listX, footerY);
+        } else if (b.phase == org.example.game.Battle.Phase.MOVE_MENU) {
+            var p = game.player();
+            java.util.List<org.example.entity.Player.PhysicalMove> moves = p.knownMovesInOrder();
+            int n = moves.size();
+
+            int lineH = 14;
+            int listX = menuBoxX + 6;
+            int listTopY = menuBoxY + 18;
+            int footerY = menuBoxY + menuBoxH - 6;
+
+            if (n == 0) {
+                g.drawString("No moves known.", listX, listTopY);
+                g.setFont(pixel(8f));
+                g.drawString("ESC back", listX, footerY);
+                return;
+            }
+
+            int sel = b.moveIndex;
+            sel = Math.max(0, Math.min(sel, n - 1));
+
+            g.setFont(pixel(8f));
+            for (int i = 0; i < n; i++) {
+                var mv = moves.get(i);
+                String label = game.moveLabel(mv);
+                String prefix = (i == sel) ? "> " : "  ";
+                g.drawString(prefix + ellipsize(g, label, menuBoxW - 28), listX, listTopY + i * lineH);
+            }
+
+            g.setFont(pixel(8f));
+            g.drawString("↑/↓ select   ENTER use   ESC back", listX, footerY);
         }
 
+    }
+
+    private void drawNpcDialogueBox(Graphics2D g, Game game, int panelW, int panelH) {
+        Npc npc = game.activeNpc();
+        if (npc == null) return;
+
+        int tile = GameConfig.TILE_SIZE;
+
+        // Dim background
+        Composite old = g.getComposite();
+        g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.60f));
+        g.setColor(Palette.GB0);
+        g.fillRect(0, 0, panelW, panelH);
+        g.setComposite(old);
+
+        // Dialogue box
+        int boxW = Math.min(panelW - 40, tile * 50);
+        int boxH = Math.min(120, tile * 16);
+        int x = (panelW - boxW) / 2;
+        int y = panelH - boxH - 40;
+
+        g.setColor(Palette.GB1);
+        g.fillRect(x, y, boxW, boxH);
+        g.setColor(Palette.GB3);
+        g.drawRect(x, y, boxW, boxH);
+
+        // NPC name
+        g.setFont(pixelBold(8f));
+        int pad = 10;
+        g.drawString(npc.name, x + pad, y + 20);
+
+        // Dialogue text
+        g.setFont(pixel(8f));
+        List<String> lines = npc.dialogueLines();
+
+        int textY = y + 40;
+        int lineH = 16;
+        int maxW = boxW - pad * 2;
+
+        for (String line : lines) {
+            String fitted = ellipsize(g, line, maxW);
+            g.drawString(fitted, x + pad, textY);
+            textY += lineH;
+        }
+
+        // Controls
+        g.setFont(pixel(7f));
+        String controls = "Z: Interact   ENTER/ESC: Close";
+        g.drawString(controls, x + pad, y + boxH - 10);
     }
 
     private void drawMainMenu(Graphics2D g, int panelW, int panelH) {
@@ -967,34 +1095,38 @@ public final class Renderer {
         int headerX = 20;
         int headerY = 32;
 
-        String left = "INVENTORY";
-        String[] tabs = new String[] {
-                (page == 0) ? "[ITEMS]"  : "ITEMS",
-                (page == 1) ? "[SPELLS]" : "SPELLS",
-                (page == 2) ? "[STATS]"  : "STATS"
-        };
+// Only draw tabs for pages 0, 1, 2 (not for shop page 3)
+        if (page != 4) {
+            String left = "INVENTORY";
+            String[] tabs = new String[]{
+                    (page == 0) ? "[ITEMS]" : "ITEMS",
+                    (page == 1) ? "[SPELLS]" : "SPELLS",
+                    (page == 2) ? "[MOVES]" : "MOVES",
+                    (page == 3) ? "[STATS]" : "STATS"
+            };
 
-        FontMetrics hfm = g.getFontMetrics();
+            FontMetrics hfm = g.getFontMetrics();
 
-        g.drawString(left, headerX, headerY);
+            g.drawString(left, headerX, headerY);
 
-        int xTabs = headerX + hfm.stringWidth(left) + hfm.stringWidth("  ");
-        int gapW = hfm.stringWidth("  "); // two spaces
+            int xTabs = headerX + hfm.stringWidth(left) + hfm.stringWidth("  ");
+            int gapW = hfm.stringWidth("  "); // two spaces
 
-        int[] tabX = new int[3];
-        int[] tabW = new int[3];
+            int[] tabX = new int[4];
+            int[] tabW = new int[4];
 
-        int x = xTabs;
-        for (int i = 0; i < 3; i++) {
-            tabX[i] = x;
-            tabW[i] = hfm.stringWidth(tabs[i]);
-            g.drawString(tabs[i], x, headerY);
-            x += tabW[i] + gapW;
+            int x = xTabs;
+            for (int i = 0; i < 4; i++) {
+                tabX[i] = x;
+                tabW[i] = hfm.stringWidth(tabs[i]);
+                g.drawString(tabs[i], x, headerY);
+                x += tabW[i] + gapW;
+            }
+
+            int underlineH = 2;
+            int underlineY = headerY + 3;
+            g.fillRect(tabX[page], underlineY, tabW[page], underlineH);
         }
-
-        int underlineH = 2;
-        int underlineY = headerY + 3;
-        g.fillRect(tabX[page], underlineY, tabW[page], underlineH);
 
         // =========================
         // COMMON LAYOUT CONSTANTS
@@ -1011,9 +1143,121 @@ public final class Renderer {
         int footerPad = 10;
 
         // =========================
+
+
+        // =========================
+        // SHOP PAGE
+        // =========================
+        if (page == 4) {
+            var items = game.currentShopItems();
+            int n = items.size();
+
+            // Header
+            g.setFont(pixelBold(8f));
+            g.drawString("SHOP", leftX, topY + 38);
+
+            String goldText = "Gold: " + game.player().gold + "g";
+            int goldW = g.getFontMetrics().stringWidth(goldText);
+            g.drawString(goldText, panelW - leftX - goldW, topY + 38);
+
+            // Shop list box
+            int listY = topY + 60;
+            int listH = panelH - listY - footerH - footerPad;
+            listH = Math.max(120, listH);
+
+            drawInvBox(g, leftX, listY, panelW - 40, listH);
+
+            if (n == 0) {
+                g.setFont(pixel(8f));
+                g.drawString(game.inSellMode() ? "(nothing to sell)" : "(shop empty)",
+                        leftX + 8, listY + 40);
+            } else {
+                int sel = game.inSellMode() ? game.sellCursorIndex() : game.shopCursorIndex();
+                int scroll = game.inSellMode() ? game.sellScrollOffset() : game.shopScrollOffset();
+                int visible = 7;
+
+                g.setFont(pixel(8f));
+                int itemY = listY + 20;
+                int lineH = 16;
+
+                int itemCount; // Declare here so it's accessible for scroll indicators
+
+                if (game.inSellMode()) {
+                    // Sell mode - show player's sellable items
+                    List<ItemType> sellItems = game.sellableItems();
+                    itemCount = sellItems.size();
+
+                    for (int row = 0; row < visible; row++) {
+                        int i = scroll + row;
+                        if (i >= itemCount) break;
+
+                        ItemType it = sellItems.get(i);
+                        int sellPrice = game.getItemSellPrice(it);
+                        int count = game.player().inv.count(it);
+                        String label = itemName(it) + " x" + count + " - " + sellPrice + "g";
+
+                        String prefix = (i == sel) ? "> " : "  ";
+                        g.drawString(prefix + ellipsize(g, label, panelW - 80),
+                                leftX + 8, itemY + row * lineH);
+                    }
+                } else {
+                    // Buy mode - show shop items
+                    itemCount = items.size();
+
+                    for (int row = 0; row < visible; row++) {
+                        int i = scroll + row;
+                        if (i >= itemCount) break;
+
+                        ShopItem it = items.get(i);
+                        String label = itemName(it.type) + " - " + it.price + "g";
+                        if (it.description != null && !it.description.isEmpty()) {
+                            label += " (" + it.description + ")";
+                        }
+
+                        String prefix = (i == sel) ? "> " : "  ";
+                        // ✅ NEW: Gray out items you can't afford
+                        boolean canAfford = game.player().canAfford(it.price);
+                        if (!canAfford && i == sel) {
+                            prefix = "> [TOO EXPENSIVE] ";
+                        }
+
+                        g.drawString(prefix + ellipsize(g, label, panelW - 80),
+                                leftX + 8, itemY + row * lineH);
+                    }
+                }
+
+                // Scroll indicators
+                if (scroll > 0) {
+                    g.setFont(pixelBold(8f));
+                    g.drawString("^", panelW - 60, itemY - 6);
+                }
+                if (scroll + visible < itemCount) {
+                    g.setFont(pixelBold(8f));
+                    g.drawString("v", panelW - 60, itemY + (visible - 1) * lineH + 6);
+                }
+            }
+
+            // Footer
+            g.setFont(pixel(8f));
+            int footerY = listY + listH + footerPad + 16;
+
+            if (game.inSellMode()) {
+                g.drawString("↑/↓ select   ENTER sell   ESC back", leftX + 8, footerY);
+            } else {
+                g.drawString("↑/↓ select   ENTER buy   S sell   ESC close", leftX + 8, footerY);
+            }
+        }
+
+        // =========================
+        // SHOP PAGE - EARLY RETURN
+        // =========================
+        if (page == 4) {
+            return; // ✅ Exit early - shop already drawn above, don't draw regular inventory
+        }
+
         // STATS PAGE: 2 COLUMNS ONLY
         // =========================
-        if (page == 2) {
+        if (page == 3) {
             int contentH = panelH - topY - footerH - footerPad;
             contentH = Math.max(160, contentH);
 
@@ -1038,13 +1282,14 @@ public final class Renderer {
             ly += lineH;
             g.drawString("EXP " + p.exp + "/" + p.expToNext, lx, ly);
             ly += lineH;
+            g.drawString("Gold: " + p.gold + "g", lx, ly);  // NEW
+            ly += lineH;
             g.drawString("Keys: " + p.keyCount(), lx, ly);
             ly += lineH;
 
             ly += lineH / 2;
 
             // Extra useful combat info
-
             String baseAtk = p.getBaseAtkMin() + "-" + p.getBaseAtkMax();
             g.drawString("Base ATK: " + baseAtk, lx, ly);
             ly += lineH;
@@ -1100,7 +1345,7 @@ public final class Renderer {
         g.setColor(Palette.GB3);
 
         if (page == 0) g.drawString("EQUIPPED", leftBoxX + 8, topY + 18);
-        else          g.drawString("KNOWN SPELLS", leftBoxX + 8, topY + 18);
+        else g.drawString("KNOWN SPELLS", leftBoxX + 8, topY + 18);
 
         g.drawString("STATS", rightBoxX + 8, topY + 18);
 
@@ -1124,11 +1369,26 @@ public final class Renderer {
                 boolean isSword = true;
 
                 switch (it) {
-                    case SWORD_WORN   -> { bMin = 0; bMax = 1; }
-                    case SWORD_BRONZE -> { bMin = 1; bMax = 1; }
-                    case SWORD_IRON   -> { bMin = 1; bMax = 2; }
-                    case SWORD_STEEL  -> { bMin = 2; bMax = 2; }
-                    case SWORD_KNIGHT -> { bMin = 2; bMax = 3; }
+                    case SWORD_WORN -> {
+                        bMin = 0;
+                        bMax = 1;
+                    }
+                    case SWORD_BRONZE -> {
+                        bMin = 1;
+                        bMax = 1;
+                    }
+                    case SWORD_IRON -> {
+                        bMin = 1;
+                        bMax = 2;
+                    }
+                    case SWORD_STEEL -> {
+                        bMin = 2;
+                        bMax = 2;
+                    }
+                    case SWORD_KNIGHT -> {
+                        bMin = 2;
+                        bMax = 3;
+                    }
                     default -> isSword = false;
                 }
 
@@ -1168,7 +1428,7 @@ public final class Renderer {
             String wep = "Weapon: " + p.getWeaponName();
             g.drawString(ellipsize(g, wep, boxW - 16), leftBoxX + 8, topY + 38);
             g.drawString("LV " + p.level + "  EXP " + p.exp + "/" + p.expToNext, leftBoxX + 8, topY + 56);
-        } else {
+        } else if (page == 1) {
             java.util.List<org.example.entity.Player.SpellType> spells = p.knownSpellsInOrder();
             int known = spells.size();
             g.drawString("Spells known: " + known, leftBoxX + 8, topY + 38);
@@ -1181,20 +1441,22 @@ public final class Renderer {
                 usageLine = game.spellUsageText(selected);
             }
             g.drawString(ellipsize(g, usageLine, boxW - 16), leftBoxX + 8, topY + 56);
+        } else if (page == 3) {  // ✅ STATS - handled earlier, shouldn't reach here
+            // This case is already handled above with early return
         }
 
-        // RIGHT TOP CONTENT (preview changes)
-        String hpCur  = p.hp + "/" + p.maxHp;
+        // RIGHT TOP CONTENT (preview changes) - FOR PAGES 0, 1, 2
+        String hpCur = p.hp + "/" + p.maxHp;
         String hpPrev = previewHp + "/" + p.maxHp;
 
-        String mpCur  = p.mp + "/" + p.maxMp;
+        String mpCur = p.mp + "/" + p.maxMp;
         String mpPrev = previewMp + "/" + p.maxMp;
 
-        String atkCur  = p.atkMin + "-" + p.atkMax;
+        String atkCur = p.atkMin + "-" + p.atkMax;
         String atkPrev = previewAtkMin + "-" + previewAtkMax;
 
-        boolean hpChanged  = (previewHp != p.hp);
-        boolean mpChanged  = (previewMp != p.mp);
+        boolean hpChanged = (previewHp != p.hp);
+        boolean mpChanged = (previewMp != p.mp);
         boolean atkChanged = (previewAtkMin != p.atkMin || previewAtkMax != p.atkMax);
 
         int statMaxW = boxW - 16;
@@ -1204,14 +1466,53 @@ public final class Renderer {
 
         java.util.ArrayList<String> lines = new java.util.ArrayList<>();
 
-        if (hpChanged)  lines.add("HP  " + hpCur + " > " + hpPrev);
-        if (mpChanged)  lines.add("MP  " + mpCur + " > " + mpPrev);
-        if (atkChanged) lines.add("ATK " + atkCur + " > " + atkPrev);
+        // ✅ Show move details on MOVES page
+        if (page == 2) {
+            java.util.List<org.example.entity.Player.PhysicalMove> moves = p.knownMovesInOrder();
+            if (!moves.isEmpty()) {
+                int sel = Math.max(0, Math.min(game.moveIndex(), moves.size() - 1));
+                var mv = moves.get(sel);
 
-        if (lines.isEmpty()) {
-            lines.add("HP  " + hpCur);
-            lines.add("MP  " + mpCur);
-            lines.add("ATK " + atkCur);
+                // Show move properties
+                switch (mv) {
+                    case SLASH -> {
+                        lines.add("Accuracy: 90%");
+                        lines.add("Damage: 100%");
+                        lines.add("Reliable standard");
+                    }
+                    case SMASH -> {
+                        lines.add("Accuracy: 75%");
+                        lines.add("Damage: 140%");
+                        lines.add("Speed scaling");
+                    }
+                    case LUNGE -> {
+                        lines.add("Accuracy: 85%");
+                        lines.add("Damage: 110%");
+                        lines.add("Crit or lose turn");
+                    }
+                    case PARRY -> {
+                        lines.add("Accuracy: 100%");
+                        lines.add("No damage");
+                        lines.add("Blocks next attack");
+                    }
+                    case SWEEP -> {
+                        lines.add("Accuracy: 100%");
+                        lines.add("Damage: 80%");
+                        lines.add("Can't be dodged");
+                    }
+                }
+            }
+        } else {
+            // Original stat preview logic for ITEMS/SPELLS pages
+            if (hpChanged) lines.add("HP  " + hpCur + " > " + hpPrev);
+            if (mpChanged) lines.add("MP  " + mpCur + " > " + mpPrev);
+            if (atkChanged) lines.add("ATK " + atkCur + " > " + atkPrev);
+
+            if (lines.isEmpty()) {
+                lines.add("HP  " + hpCur);
+                lines.add("MP  " + mpCur);
+                lines.add("ATK " + atkCur);
+            }
         }
 
         for (String sLine : lines) {
@@ -1219,11 +1520,17 @@ public final class Renderer {
             sy += statLineH;
         }
 
-        // LIST AREA BOX (ITEMS / SPELLS)
+        // LIST AREA BOX (ITEMS / SPELLS / MOVES) - NOW OUTSIDE THE ELSE
         drawInvBox(g, leftX, listBoxY, panelW - 40, listBoxH);
 
         g.setFont(pixelBold(8f));
-        g.drawString(page == 0 ? "ITEMS" : "SPELLS", leftX + 8, listBoxY + 18);
+        String listTitle = switch(page) {
+            case 0 -> "ITEMS";
+            case 1 -> "SPELLS";
+            case 2 -> "MOVES";
+            default -> "";
+        };
+        g.drawString(listTitle, leftX + 8, listBoxY + 18);
 
         int listX = leftX + 8;
         int listY = listBoxY + 38;
@@ -1242,6 +1549,7 @@ public final class Renderer {
         g.setFont(pixel(8f));
 
         if (page == 0) {
+            // PAGE 0: ITEMS
             java.util.List<org.example.item.ItemType> items = p.inv.nonEmptyTypes();
             int n = items.size();
 
@@ -1278,7 +1586,8 @@ public final class Renderer {
                 }
             }
 
-        } else { // page == 1
+        } else if (page == 1) {
+            // PAGE 1: SPELLS
             java.util.List<org.example.entity.Player.SpellType> spells = p.knownSpellsInOrder();
             int n = spells.size();
 
@@ -1314,6 +1623,44 @@ public final class Renderer {
                     g.drawString(prefix + ellipsize(g, label, panelW - 80), listX, listY + row * lineH);
                 }
             }
+
+        } else if (page == 2) {
+            // PAGE 2: MOVES
+            java.util.List<org.example.entity.Player.PhysicalMove> moves = p.knownMovesInOrder();
+            int n = moves.size();
+
+            if (n == 0) {
+                g.drawString("(no moves known)", listX, listY);
+            } else {
+                int sel = Math.max(0, Math.min(game.moveIndex(), n - 1));
+                int scroll = Math.max(0, Math.min(game.moveScroll(), Math.max(0, n - visible)));
+
+                // scroll indicators
+                int listBoxW = panelW - 40;
+                int indX = leftX + listBoxW - 14;
+                int indTopY = listY - 6;
+                int indBotY = listY + (visible - 1) * lineH + 6;
+
+                g.setFont(pixelBold(8f));
+                g.setColor(Palette.GB3);
+
+                boolean hasAbove = scroll > 0;
+                boolean hasBelow = (scroll + visible) < n;
+
+                if (hasAbove) g.drawString("^", indX, indTopY);
+                if (hasBelow) g.drawString("v", indX, indBotY);
+
+                g.setFont(pixel(8f));
+                for (int row = 0; row < visible; row++) {
+                    int i = scroll + row;
+                    if (i >= n) break;
+
+                    var mv = moves.get(i);
+                    String label = game.moveLabel(mv);
+                    String prefix = (i == sel) ? "> " : "  ";
+                    g.drawString(prefix + ellipsize(g, label, panelW - 80), listX, listY + row * lineH);
+                }
+            }
         }
 
         // restore clip for footer
@@ -1325,6 +1672,7 @@ public final class Renderer {
         footerY = Math.min(footerY, panelH - 12);
 
         g.drawString("←/→ tabs   ↑/↓ select   ENTER use/equip   ESC close", leftX + 8, footerY);
+
     }
 
     private void drawLevelUpOverlay(Graphics2D g, Game game, int panelW, int panelH) {
@@ -1685,4 +2033,22 @@ public final class Renderer {
 
         g.setComposite(old);
     }
-}
+    private String itemName(ItemType type) {
+        return switch(type) {
+            case HP_POTION -> "HP Potion";
+            case MP_POTION -> "MP Potion";
+            case TOWN_PORTAL -> "Town Portal";
+            case SWORD_BRONZE -> "Bronze Sword";
+            case SWORD_IRON -> "Iron Sword";
+            case SWORD_STEEL -> "Steel Sword";
+            case SWORD_KNIGHT -> "Knight Sword";
+            case SWORD_WORN -> "Worn Sword";
+            case TOME_ICE_SHARD -> "Tome: Ice Shard";
+            case TOME_HEAL -> "Tome: Heal";
+            case TOME_SLOW_POKE -> "Tome: Slow Poke";
+            case TOME_FLASH_FREEZE -> "Tome: Flash Freeze";
+            case TOME_FIRE_SWORD -> "Tome: Fire Sword";
+            default -> type.toString();
+        };
+    }
+}  // Final closing brace of Renderer class

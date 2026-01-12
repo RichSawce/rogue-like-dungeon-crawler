@@ -10,12 +10,18 @@ public final class Battle {
         PLAYER_MENU,
         ITEM_MENU,
         SPELL_MENU,
+        MOVE_MENU,
         ENEMY_DELAY,
         ENEMY_ACT,
-        ENEMY_MESSAGE, // <-- ADD
+        ENEMY_MESSAGE,
         WON,
         LOST
     }
+    // Spell menu cursor
+    public int spellIndex = 0;
+
+    // ✅ NEW: Move menu cursor
+    public int moveIndex = 0;
 
     public boolean foeGuarded = false;
     public final Enemy foe;
@@ -27,9 +33,6 @@ public final class Battle {
 
     public String log = "A wild foe appears!";
     public int timerFrames = 0;
-
-    // Spell menu cursor
-    public int spellIndex = 0;
 
     // ----------------------------
 // New stat tuning knobs
@@ -52,6 +55,7 @@ public final class Battle {
     // Status effects (player)
     // ----------------------------
     public boolean fireSwordActive = false; // lasts the whole battle
+    public boolean parryActive = false;
     public int playerSlowTurns = 0;
     public int playerAccuracyPenaltyPct = 0; // e.g. 30 means -30% accuracy
     public int playerDodgePenaltyPct = 0;    // e.g. 20 means -20% dodge chance

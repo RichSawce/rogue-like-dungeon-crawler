@@ -112,6 +112,7 @@ public final class TownGenerator {
             case WEAPON_SHOP, MAGIC_SHOP -> 1;
             case QUEST_HOUSE_1, QUEST_HOUSE_2 -> 2;
             case CRYPT -> 3;
+            case HOUSE -> 4;
         };
     }
 

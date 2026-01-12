@@ -4,7 +4,9 @@ public enum Tile {
     // Dungeon / general solids
     WALL('#', false),
     FLOOR('.', true),
+    STAIRS_UP('<', true),
     STAIRS_DOWN('>', true),
+
 
     // Your existing key/door system
     LOCKED_DOOR('+', false),

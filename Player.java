@@ -11,7 +11,23 @@ import java.util.List;
 public final class Player extends Actor {
 
     public enum Stat { HP, MP, ATK, SPEED, WILL, INT }
+    public int gold = 100; // Starting gold
 
+    public boolean canAfford(int price) {
+        return gold >= price;
+    }
+
+    public boolean spendGold(int amount) {
+        if (gold >= amount) {
+            gold -= amount;
+            return true;
+        }
+        return false;
+    }
+
+    public void earnGold(int amount) {
+        gold += amount;
+    }
     // -------------------------
     // Spells
     // -------------------------
@@ -41,6 +57,35 @@ public final class Player extends Actor {
 
     public boolean learnSpell(SpellType s) {
         return spellsKnown.add(s);
+    }
+
+    // -------------------------
+// Physical Moves
+// -------------------------
+    public enum PhysicalMove {
+        SLASH,      // 90% acc, 100% dmg
+        SMASH,      // 75% acc, 140% dmg, speed bonus
+        LUNGE,      // 85% acc, 110% dmg, crit on hit OR lose turn on miss
+        PARRY,      // 100% acc, reduces next enemy attack to 0
+        SWEEP       // 100% acc (can't be dodged), 80% dmg
+    }
+
+    private final EnumSet<PhysicalMove> movesKnown = EnumSet.noneOf(PhysicalMove.class);
+
+    public List<PhysicalMove> knownMovesInOrder() {
+        ArrayList<PhysicalMove> out = new ArrayList<>();
+        for (PhysicalMove m : PhysicalMove.values()) {
+            if (movesKnown.contains(m)) out.add(m);
+        }
+        return out;
+    }
+
+    public boolean knowsMove(PhysicalMove m) {
+        return movesKnown.contains(m);
+    }
+
+    public boolean learnMove(PhysicalMove m) {
+        return movesKnown.add(m);
     }
 
     // -------------------------
@@ -122,6 +167,7 @@ public final class Player extends Actor {
         this.baseAtkMax = this.atkMax;
 
         learnSpell(SpellType.MAGIC_STAB);
+        learnMove(PhysicalMove.SLASH);  // ✅ NEW: Start with basic move
         equipWeapon("Rusty Sword", 0, 0);
     }
 

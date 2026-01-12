@@ -4,25 +4,19 @@ import org.example.item.GroundItem;
 import org.example.entity.Enemy;
 import org.example.entity.Player;
 import org.example.game.util.RNG;
-import org.example.world.Dungeon;
-import org.example.world.DungeonGenerator;
-import org.example.world.Fov;
+import org.example.world.*;
 import org.example.entity.Chest;
 import org.example.item.ItemType;
-import org.example.world.Tile;
-import org.example.world.Town;
-import org.example.world.WorldMap;   // you already have this interface
-import org.example.world.TownGenerator;
-import org.example.world.BuildingGenerator;
-import org.example.world.BuildingLot;
 
+
+import java.awt.event.KeyEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 
 public final class Game {
-    public enum State {MAIN_MENU, DUNGEON, BATTLE, LEVEL_UP, INVENTORY, GAME_OVER}
+    public enum State {MAIN_MENU, DUNGEON, BATTLE, LEVEL_UP, INVENTORY, GAME_OVER, NPC_DIALOGUE}
 
     public enum Zone {TOWN, BUILDING, DUNGEON}
 
@@ -55,16 +49,16 @@ public final class Game {
     // Cache dungeon floors so each floor is generated once per run.
     private static final class DungeonFloorState {
         final Dungeon dungeon;
-        final java.util.List<Enemy> enemies;
-        final java.util.List<Chest> chests;
-        final java.util.List<GroundItem> groundItems;
+        final List<Enemy> enemies;
+        final List<Chest> chests;
+        final List<GroundItem> groundItems;
         final boolean floorKeyObtained;
 
         DungeonFloorState(
                 Dungeon dungeon,
-                java.util.List<Enemy> enemies,
-                java.util.List<Chest> chests,
-                java.util.List<GroundItem> groundItems,
+                List<Enemy> enemies,
+                List<Chest> chests,
+                List<GroundItem> groundItems,
                 boolean floorKeyObtained
         ) {
             this.dungeon = dungeon;
@@ -74,6 +68,14 @@ public final class Game {
             this.floorKeyObtained = floorKeyObtained;
         }
     }
+
+    private Npc activeNpc = null;
+    private int dialogueLineIndex = 0;
+    // Shop state
+    private List<ShopItem> currentShopItems = new ArrayList<>();
+    private int shopCursorIndex = 0;
+    private int shopScrollOffset = 0;
+    private static final int SHOP_VISIBLE_ROWS = 7;
 
     // Spawn override for when we want to spawn somewhere other than dungeon start
     private boolean hasPendingDungeonSpawn = false;
@@ -101,6 +103,9 @@ public final class Game {
 
     private int spellIndex = 0;        // selection index for spells
     private int spellScroll = 0;       // scroll offset for spells
+    // ✅ NEW: Move menu state
+    private int moveIndex = 0;         // selection index for moves
+    private int moveScroll = 0;        // scroll offset for moves
 
     // -----------------------------
 // Level-up modal UI state
@@ -221,8 +226,8 @@ public final class Game {
 
     private String menuHint = "Press ENTER to Start";
 
-    public java.util.List<ItemType> getUsableBattleItems() {
-        java.util.ArrayList<ItemType> out = new java.util.ArrayList<>();
+    public List<ItemType> getUsableBattleItems() {
+        ArrayList<ItemType> out = new ArrayList<>();
         for (ItemType t : player.inv.nonEmptyTypes()) {
             if (t == ItemType.HP_POTION || t == ItemType.MP_POTION) {
                 out.add(t);
@@ -238,8 +243,8 @@ public final class Game {
             case MP_POTION -> "MP Potion  x" + c + "  (+6 MP)";
             case KEY -> "Key x" + c;
             case TOWN_PORTAL -> "Town Portal  x" + c + " (Opens a return portal)";
+            case GOLD -> "g";
 
-            // swords (small boosts that stack nicely with level ATK ups)
             // swords (small boosts that stack nicely with level ATK ups)
             case SWORD_WORN -> "Worn Sword  x" + c;
             case SWORD_BRONZE -> "Bronze Sword x" + c;
@@ -253,6 +258,12 @@ public final class Game {
             case TOME_FLASH_FREEZE -> "Tome: Flash Freeze x" + c + " (Learn spell)";
             case TOME_FIRE_SWORD -> "Tome: Fire Sword x" + c + " (Learn spell)";
             case TOME_HEAL -> "Tome: Heal x" + c + " (Learn spell)";
+
+            // move tomes
+            case TOME_SMASH -> "Tome: Smash x" + c + " (Learn move)";
+            case TOME_LUNGE -> "Tome: Lunge x" + c + " (Learn move)";
+            case TOME_PARRY -> "Tome: Parry x" + c + " (Learn move)";
+            case TOME_SWEEP -> "Tome: Sweep x" + c + " (Learn move)";
         };
     }
 
@@ -379,9 +390,11 @@ public final class Game {
         // If we've already generated this floor during this run, restore it.
         if (loadDungeonFloorFromCache(floor)) {
 
-            // For now: spawn player at this floor's start.
-            // Later, if you add "stairs up", you can spawn at stairs up instead.
             int[] start = dungeon.getStart();
+            dungeon.setTile(start[0], start[1], Tile.STAIRS_UP);
+
+            stairsUpPosByFloor.putIfAbsent(floor, new int[]{ start[0], start[1] });
+
             if (player == null) player = new Player(start[0], start[1]);
             player.x = start[0];
             player.y = start[1];
@@ -392,7 +405,10 @@ public final class Game {
                 hasPendingDungeonSpawn = false;
             }
 
-            // ✅ Restamp portal tile if it's active on this floor
+            // ✅ REMOVE EXIT DOOR ON FLOORS 2+
+            removeDungeonExitDoorsIfNotFloor1();
+
+            // ✅ Restamp portal tile if needed
             if (townPortalActive && zone == Zone.DUNGEON && floor == townPortalFloor && dungeon != null) {
                 dungeon.setTile(townPortalDungeonX, townPortalDungeonY, Tile.TOWN_PORTAL);
             }
@@ -405,7 +421,6 @@ public final class Game {
             state = State.DUNGEON;
             battle = null;
             return;
-
         }
         enemies.clear();
         chests.clear(); // IMPORTANT: clear first so starter chests aren't wiped later
@@ -415,18 +430,32 @@ public final class Game {
         DungeonGenerator gen = new DungeonGenerator(rng);
         this.dungeon = gen.generate(); // uses GameConfig.DUNGEON_W/H
 
-        // Place player at start
+        // ✅ REMOVE EXIT DOOR ON FLOORS 2+
+        removeDungeonExitDoorsIfNotFloor1();
+        // Place player at start (default)
         int[] start = dungeon.getStart();
-        if (hasPendingDungeonSpawn) {
-            player.x = pendingDungeonSpawnX;
-            player.y = pendingDungeonSpawnY;
-            hasPendingDungeonSpawn = false;
+        // Record stairs-up position for this floor once (do not overwrite)
+        stairsUpPosByFloor.putIfAbsent(floor, new int[]{ start[0], start[1] });
+        // Only floors 2+ have STAIRS_UP
+        if (floor > 1) {
+            int[] up = stairsUpPosByFloor.get(floor);
+            dungeon.setTile(up[0], up[1], Tile.STAIRS_UP);
+        } else {
+            dungeon.setTile(start[0], start[1], Tile.FLOOR);
         }
+
         if (player == null) {
             player = new Player(start[0], start[1]);
         } else {
             player.x = start[0];
             player.y = start[1];
+        }
+
+// ✅ If we have a pending spawn (stairs-up/down travel), apply it AFTER start placement
+        if (hasPendingDungeonSpawn) {
+            player.x = pendingDungeonSpawnX;
+            player.y = pendingDungeonSpawnY;
+            hasPendingDungeonSpawn = false;
         }
 
         ensureStairsDownExists();
@@ -455,7 +484,7 @@ public final class Game {
         {
             int[] p;
             while (true) {
-                p = dungeon.findRandomRoomFloor(rng, true); // ✅ rooms only, exclude stairs room
+                p = dungeon.findRandomRoomFloor(rng, true);
 
                 if ((p[0] == player.x && p[1] == player.y) ||
                         getEnemyAt(p[0], p[1]) != null ||
@@ -468,7 +497,7 @@ public final class Game {
 
 // 2) Place the remaining chests with normal loot (NO extra keys)
         for (int i = 1; i < chestCount; i++) {
-            int[] p = dungeon.findRandomRoomFloor(rng, true); // ✅ rooms only (can be in stairs room for normal loot if you want)
+            int[] p = dungeon.findRandomRoomFloor(rng, true);
 
             if ((p[0] == player.x && p[1] == player.y) ||
                     getEnemyAt(p[0], p[1]) != null ||
@@ -480,17 +509,20 @@ public final class Game {
             int r = rng.nextInt(100);
 
             ItemType loot;
-            if (r < 25) loot = ItemType.HP_POTION;
+            if (r < 10) loot = ItemType.GOLD;  // 10% chance for gold chest
+            else if (r < 30) loot = ItemType.HP_POTION;
             else if (r < 50) loot = ItemType.TOWN_PORTAL;
-            else if (r < 70) loot = ItemType.MP_POTION;
-            else if (r < 78) loot = ItemType.SWORD_WORN;
-            else if (r < 84) loot = ItemType.SWORD_BRONZE;
-            else if (r < 89) loot = ItemType.TOME_ICE_SHARD;
-            else if (r < 91) loot = ItemType.SWORD_IRON;
-            else if (r < 92) loot = ItemType.TOME_SLOW_POKE;
-            else if (r < 93) loot = ItemType.TOME_FIRE_SWORD;
-            else if (r < 97) loot = ItemType.TOME_HEAL;
-            else if (r < 98) loot = ItemType.SWORD_STEEL;
+            else if (r < 65) loot = ItemType.MP_POTION;
+            else if (r < 73) loot = ItemType.SWORD_WORN;
+            else if (r < 79) loot = ItemType.SWORD_BRONZE;
+            else if (r < 84) loot = ItemType.TOME_ICE_SHARD;
+            else if (r < 87) loot = ItemType.SWORD_IRON;
+            else if (r < 89) loot = ItemType.TOME_SLOW_POKE;
+            else if (r < 91) loot = ItemType.TOME_FIRE_SWORD;
+            else if (r < 93) loot = ItemType.TOME_SMASH;
+            else if (r < 95) loot = ItemType.TOME_HEAL;
+            else if (r < 97) loot = ItemType.SWORD_STEEL;
+            else if (r < 98) loot = ItemType.TOME_LUNGE;
             else loot = ItemType.TOME_FLASH_FREEZE;
 
             chests.add(new Chest(p[0], p[1], loot));
@@ -514,7 +546,7 @@ public final class Game {
         if (deathWipeActive) return; // freeze game during death transition
 
         // --- Global restart (R) with fade (works on ALL screens, including Main Menu) ---
-        if (!isFading() && input.wasTapped(java.awt.event.KeyEvent.VK_R)) {
+        if (!isFading() && input.wasTapped(KeyEvent.VK_R)) {
             startNewGameFade(System.currentTimeMillis());
             return;
         }
@@ -536,6 +568,11 @@ public final class Game {
             }
 
             updateInventory(input);
+            return;
+        }
+
+        if (state == State.NPC_DIALOGUE) {
+            updateNpcDialogue(input);
             return;
         }
 
@@ -568,12 +605,12 @@ public final class Game {
         int dx = 0, dy = 0;
 
         // Movement taps
-        if (input.wasTapped(java.awt.event.KeyEvent.VK_LEFT) || input.wasTapped(java.awt.event.KeyEvent.VK_A)) dx = -1;
-        else if (input.wasTapped(java.awt.event.KeyEvent.VK_RIGHT) || input.wasTapped(java.awt.event.KeyEvent.VK_D))
+        if (input.wasTapped(KeyEvent.VK_LEFT) || input.wasTapped(KeyEvent.VK_A)) dx = -1;
+        else if (input.wasTapped(KeyEvent.VK_RIGHT) || input.wasTapped(KeyEvent.VK_D))
             dx = 1;
-        else if (input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W))
+        else if (input.wasTapped(KeyEvent.VK_UP) || input.wasTapped(KeyEvent.VK_W))
             dy = -1;
-        else if (input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S))
+        else if (input.wasTapped(KeyEvent.VK_DOWN) || input.wasTapped(KeyEvent.VK_S))
             dy = 1;
 
         if (dx != 0 || dy != 0) {
@@ -586,7 +623,7 @@ public final class Game {
         }
 
         // Wait
-        if (input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+        if (input.wasTapped(KeyEvent.VK_SPACE)) {
             setLog("You wait.", 1.5);
             turn.endPlayerTurn();
             recomputeFov();
@@ -594,7 +631,7 @@ public final class Game {
         }
 
         // Open inventory
-        if (input.wasTapped(java.awt.event.KeyEvent.VK_I)) {
+        if (input.wasTapped(KeyEvent.VK_I)) {
             lastLogBeforeInventory = lastLog;
             state = State.INVENTORY;
             lastLog = "Inventory: ←/→ tabs   ↑/↓ select   ENTER use/equip/cast   ESC close";
@@ -603,11 +640,13 @@ public final class Game {
             invScroll = 0;
             spellIndex = 0;
             spellScroll = 0;
+            moveIndex = 0;   // ✅ NEW
+            moveScroll = 0;
             return;
         }
 
         // Stairs
-        if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER)) {
+        if (input.wasTapped(KeyEvent.VK_ENTER)) {
 
             WorldMap map = activeMap();
             if (map == null) return;
@@ -636,16 +675,23 @@ public final class Game {
                 return;
             }
 
-            // --- BUILDING: exit back to town ---
+            // --- BUILDING: exit back to town OR talk to NPC ---
             if (zone == Zone.BUILDING) {
                 if (building == null) return;
 
                 Tile t = building.tile(player.x, player.y);
 
-                // If your BuildingGenerator stamps the exit tile as Tile.DOOR
+                // Exit door
                 if (t == Tile.DOOR) {
                     exitBuildingToTown();
                     turn.reset();
+                    return;
+                }
+
+                // Check if facing an NPC (adjacent tile)
+                Npc npc = findAdjacentNpc();
+                if (npc != null) {
+                    openNpcDialogue(npc);
                     return;
                 }
 
@@ -665,8 +711,8 @@ public final class Game {
                     return;
                 }
 
-                // ✅ EXIT: allow leaving the dungeon via the entrance door
-                if (isAtOrNextToDoor(dungeon, player.x, player.y)) {
+                // ✅ EXIT: only possible on Floor 1 at the entrance door
+                if (floor == 1 && dungeon.tile(player.x, player.y) == Tile.DOOR) {
                     exitDungeonToTown();
                     return;
                 }
@@ -730,14 +776,26 @@ public final class Game {
     private boolean isAtOrNextToDoor(WorldMap map, int x, int y) {
         if (map == null) return false;
 
-        // Standing on door
-        if (map.tile(x, y) == Tile.DOOR) return true;
+        // Standing on door (only if in bounds)
+        if (map.inBounds(x, y) && map.tile(x, y) == Tile.DOOR) return true;
 
-        // Adjacent to door
-        return (map.tile(x + 1, y) == Tile.DOOR) ||
-                (map.tile(x - 1, y) == Tile.DOOR) ||
-                (map.tile(x, y + 1) == Tile.DOOR) ||
-                (map.tile(x, y - 1) == Tile.DOOR);
+        // Adjacent to door (check bounds before calling tile)
+        int[][] dirs = {
+                { 1, 0},
+                {-1, 0},
+                { 0, 1},
+                { 0,-1}
+        };
+
+        for (int[] d : dirs) {
+            int nx = x + d[0];
+            int ny = y + d[1];
+            if (map.inBounds(nx, ny) && map.tile(nx, ny) == Tile.DOOR) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void exitDungeonToTown() {
@@ -778,7 +836,9 @@ public final class Game {
             building = buildingInteriorCache.get(lot);
         } else {
             BuildingGenerator bg = new BuildingGenerator(rng);
-            building = bg.generateInterior();
+
+            BuildingType type = (lot != null) ? lot.type : BuildingType.HOUSE; // default fallback
+            building = bg.generateInterior(type);
 
             // Cache it so this building stays the same when you re-enter
             if (lot != null) {
@@ -817,11 +877,16 @@ public final class Game {
         }
     }
 
-    // Treat the dungeon start tile as STAIRS UP
+
+    // Treat the dungeon start (or recorded) tile as STAIRS UP, but allow adjacent interaction too.
     private boolean isOnStairsUp() {
         if (zone != Zone.DUNGEON || dungeon == null || player == null) return false;
-        int[] s = dungeon.getStart();
-        return player.x == s[0] && player.y == s[1];
+        if (floor <= 1) return false; // no stairs-up on floor 1
+
+        int[] up = stairsUpPosByFloor.get(floor);
+        if (up == null) up = dungeon.getStart();
+
+        return player.x == up[0] && player.y == up[1];
     }
 
     // Find STAIRS DOWN tile by scanning (uses your existing dungeon.isStairsDown)
@@ -838,19 +903,19 @@ public final class Game {
     private void ascendOneFloor() {
         if (zone != Zone.DUNGEON) return;
 
+        // ✅ Don't auto-exit to town from stairs-up.
+        // Exiting happens ONLY via the door interaction.
         if (floor <= 1) {
-            exitDungeonToTown();
+            setLog("You're already at the top floor.", 2.0);
             return;
         }
 
         saveCurrentDungeonFloorToCache();
-
         floor--;
 
-        // Spawn at the stairs-down of the destination floor
+        // Spawn at the STAIRS DOWN of the destination floor (so you appear on the stairs)
         DungeonFloorState cached = dungeonFloorCache.get(floor);
         if (cached != null) {
-            // temporarily point dungeon at cached to locate stairs down
             Dungeon prev = dungeon;
             dungeon = cached.dungeon;
             int[] sd = findStairsDownPos();
@@ -861,13 +926,9 @@ public final class Game {
                 pendingDungeonSpawnX = sd[0];
                 pendingDungeonSpawnY = sd[1];
             }
-        } else {
-            // if not cached yet, we’ll still try to spawn near stairs-down after generation
-            // fallback: spawn at start (generateFloor will apply if pending is set later)
-            // You can skip setting pending here if you prefer.
         }
 
-        setLog("You ascend...", 2.5);
+        setLog("You ascend...", 2.0);
         generateFloor();
     }
 
@@ -903,6 +964,18 @@ public final class Game {
         floor++;
         setLog("You descend...", 2.5);
         generateFloor();
+    }
+    private void removeDungeonExitDoorsIfNotFloor1() {
+        if (dungeon == null) return;
+        if (floor <= 1) return; // Floor 1 keeps the exit door
+
+        for (int y = 0; y < dungeon.h(); y++) {
+            for (int x = 0; x < dungeon.w(); x++) {
+                if (dungeon.tile(x, y) == Tile.DOOR) {
+                    dungeon.setTile(x, y, Tile.FLOOR);
+                }
+            }
+        }
     }
 
     private boolean tryPlayerMoveOrAttack(int dx, int dy) {
@@ -945,6 +1018,11 @@ public final class Game {
             player.x = nx;
             player.y = ny;
 
+            if (isNpcBlockingAt(map, nx, ny)) {
+                setLog("Someone is standing there.", 1.5);
+                return true; // counts as an action or not, your call
+            }
+
             // Chests / ground items only make sense in dungeon for now
             if (zone == Zone.DUNGEON) {
                 Chest chest = getChestAt(player.x, player.y);
@@ -952,15 +1030,24 @@ public final class Game {
                     chest.opened = true;
 
                     ItemType loot = chest.loot;
-                    if (loot == ItemType.KEY && floorKeyObtained) loot = rollNonKeyChestLoot();
 
-                    player.inv.add(loot, 1);
-
-                    if (loot == ItemType.KEY) {
-                        onKeyObtainedThisFloor();
-                        setLog("You found a key! (Keys: " + player.keyCount() + ")", 2.5);
+                    if (loot == ItemType.GOLD) {
+                        int gold = 15 + rng.nextInt(16); // 15-30 gold
+                        player.earnGold(gold);
+                        setLog("You found " + gold + " gold!", 2.5);
                     } else {
-                        setLog("You found a " + itemName(loot) + "!", 2.5);
+                        if (loot == ItemType.KEY && floorKeyObtained) {
+                            loot = rollNonKeyChestLoot();
+                        }
+
+                        player.inv.add(loot, 1);
+
+                        if (loot == ItemType.KEY) {
+                            onKeyObtainedThisFloor();
+                            setLog("You found a key! (Keys: " + player.keyCount() + ")", 2.5);
+                        } else {
+                            setLog("You found a " + itemName(loot) + "!", 2.5);
+                        }
                     }
                 }
 
@@ -972,6 +1059,38 @@ public final class Game {
 
         setLog("Bumped into wall.", 2.5);
         return true;
+    }
+
+    private boolean isNpcBlockingAt(WorldMap map, int x, int y) {
+        if (zone == Zone.BUILDING && building != null) {
+            return building.npcAt(x, y) != null;
+        }
+        if (zone == Zone.DUNGEON && dungeon != null) {
+            return dungeon.npcAt(x, y) != null;
+        }
+        return false;
+    }
+
+
+    private void showNpcDialogue(Npc npc) {
+        // Get dialogue lines for this NPC type
+        List<String> lines = npc.dialogueLines();
+
+        if (lines.isEmpty()) {
+            setLog(npc.name + " has nothing to say.", 2.0);
+            return;
+        }
+
+        // For now, just show the first line
+        // Later you can make a proper dialogue UI
+        String message = npc.name + ": " + lines.get(0);
+
+        // Add a second line if there are instructions
+        if (lines.size() > 1) {
+            message = message + " " + lines.get(1);
+        }
+
+        setLog(message, 4.0);
     }
 
     private void enemyTurn() {
@@ -1057,13 +1176,15 @@ public final class Game {
                 floor,
                 new DungeonFloorState(
                         dungeon,
-                        new java.util.ArrayList<>(enemies),
-                        new java.util.ArrayList<>(chests),
-                        new java.util.ArrayList<>(groundItems),
+                        new ArrayList<>(enemies),
+                        new ArrayList<>(chests),
+                        new ArrayList<>(groundItems),
                         floorKeyObtained
                 )
         );
     }
+    // Remembers where the STAIRS-UP tile is for each floor (where you return to when going up)
+    private final Map<Integer, int[]> stairsUpPosByFloor = new HashMap<>();
 
     private boolean loadDungeonFloorFromCache(int targetFloor) {
         DungeonFloorState st = dungeonFloorCache.get(targetFloor);
@@ -1160,23 +1281,28 @@ public final class Game {
         // Remove the defeated enemy from the dungeon
         enemies.remove(battle.foe);
 
-        // ✅ 15% drop chance
+        // Drop items (15% chance)
         maybeDropEnemyLoot(battle.foe.x, battle.foe.y);
 
+        // Gold drop
+        int goldDropped = battle.foe.goldDrop();
+        player.earnGold(goldDropped);
+
+        // EXP
         int gained = battle.foe.xpValue();
         player.gainExp(gained);
 
-        setLog("You gained " + gained + " EXP.", 2.5);
+        setLog("You gained " + gained + " EXP and " + goldDropped + " gold.", 2.5);
 
-        // Tear down battle first (so we’re not “in battle” anymore)
+        // Tear down battle first
         battle = null;
 
-        // If player can level up, offer immediately (unless they previously declined)
+        // Level up check
         if (player.canLevelUp() && !levelUpDeferred && !levelUpOffered) {
-            openLevelUpModal(false, true); // state becomes LEVEL_UP inside here
+            openLevelUpModal(false, true);
             recomputeFov();
             turn.reset();
-            return; // ✅ IMPORTANT: don’t overwrite state after opening modal
+            return;
         }
 
         // Otherwise return to dungeon normally
@@ -1223,7 +1349,7 @@ public final class Game {
         }
 
         ItemType drop = (r < 70) ? ItemType.HP_POTION : ItemType.MP_POTION;
-        groundItems.add(new org.example.item.GroundItem(x, y, drop));
+        groundItems.add(new GroundItem(x, y, drop));
         // Don't spam the log too much; optional:
         setLog("An enemy dropped something!", 3.5);
     }
@@ -1239,11 +1365,133 @@ public final class Game {
 
     private void updateInventory(Input input) {
 
-        // close
-        if (input.wasTapped(java.awt.event.KeyEvent.VK_ESCAPE) || input.wasTapped(java.awt.event.KeyEvent.VK_I)) {
-            state = State.DUNGEON;
+        if (invPage == 4) { // SHOP PAGE
+            // ✅ CHECK SELL MODE FIRST - it has priority
+            if (inSellMode) {
+                // SELL MODE HANDLING
+                List<ItemType> sellItems = sellableItems;
+                int n = sellItems.size();
 
-// Only restore if we’re still showing the generic inventory help text
+                // Close sell menu
+                if (input.wasTapped(KeyEvent.VK_ESCAPE)) {
+                    closeSellMenu();
+                    return;
+                }
+
+                if (n == 0) {
+                    setLog("You have nothing this shop will buy.", 2.0);
+                    return;
+                }
+
+                // Navigate
+                if (input.wasTapped(KeyEvent.VK_UP) ||
+                        input.wasTapped(KeyEvent.VK_W)) {
+                    sellCursorIndex--;
+                    if (sellCursorIndex < 0) sellCursorIndex = 0;
+                } else if (input.wasTapped(KeyEvent.VK_DOWN) ||
+                        input.wasTapped(KeyEvent.VK_S)) {
+                    sellCursorIndex++;
+                    if (sellCursorIndex >= n) sellCursorIndex = n - 1;
+                }
+
+                // Keep visible
+                if (sellCursorIndex < sellScrollOffset) {
+                    sellScrollOffset = sellCursorIndex;
+                }
+                if (sellCursorIndex >= sellScrollOffset + SHOP_VISIBLE_ROWS) {
+                    sellScrollOffset = sellCursorIndex - SHOP_VISIBLE_ROWS + 1;
+                }
+
+                // Sell item (ENTER)
+                if (input.wasTapped(KeyEvent.VK_ENTER) ||
+                        input.wasTapped(KeyEvent.VK_SPACE)) {
+
+                    ItemType item = sellItems.get(sellCursorIndex);
+                    int sellPrice = getItemSellPrice(item);
+
+                    if (player.useItem(item)) {
+                        player.earnGold(sellPrice);
+                        setLog("Sold " + itemName(item) + " for " + sellPrice + "g!", 2.5);
+
+                        // Rebuild sellable list
+                        openSellMenu();
+                    }
+                }
+
+                return; // ✅ Exit early - sell mode handled
+            }
+
+            // BUY MODE HANDLING (only runs if NOT in sell mode)
+            var items = currentShopItems;
+            int n = items.size();
+
+            if (n == 0) {
+                invPage = 0;
+                state = State.DUNGEON;
+                return;
+            }
+
+            // Close shop
+            if (input.wasTapped(KeyEvent.VK_ESCAPE)) {
+                state = State.DUNGEON;  // ✅ Changed from NPC_DIALOGUE
+                invPage = 0;
+
+                // Restore log
+                if (lastLog != null && lastLog.startsWith("Inventory:")) {
+                    lastLog = lastLogBeforeInventory;
+                }
+                lastLogBeforeInventory = "";
+                return;
+            }
+
+            // Navigate
+            if (input.wasTapped(KeyEvent.VK_UP) ||
+                    input.wasTapped(KeyEvent.VK_W)) {
+                shopCursorIndex--;
+                if (shopCursorIndex < 0) shopCursorIndex = 0;
+            } else if (input.wasTapped(KeyEvent.VK_DOWN) ||
+                    input.wasTapped(KeyEvent.VK_S)) {
+                shopCursorIndex++;
+                if (shopCursorIndex >= n) shopCursorIndex = n - 1;
+            }
+
+            // Keep visible
+            if (shopCursorIndex < shopScrollOffset) {
+                shopScrollOffset = shopCursorIndex;
+            }
+            if (shopCursorIndex >= shopScrollOffset + SHOP_VISIBLE_ROWS) {
+                shopScrollOffset = shopCursorIndex - SHOP_VISIBLE_ROWS + 1;
+            }
+
+            // Buy item (ENTER)
+            if (input.wasTapped(KeyEvent.VK_ENTER) ||
+                    input.wasTapped(KeyEvent.VK_SPACE)) {
+
+                ShopItem item = items.get(shopCursorIndex);
+
+                if (player.canAfford(item.price)) {
+                    player.spendGold(item.price);
+                    player.inv.add(item.type, 1);
+                    setLog("Bought " + itemName(item.type) + " for " + item.price + "g!", 2.5);
+                } else {
+                    int needed = item.price - player.gold;
+                    setLogSticky("Not enough gold! Need " + needed + " more.");
+                }
+            }
+
+            // Sell item (S key)
+            if (input.wasTapped(KeyEvent.VK_S)) {
+                openSellMenu();
+            }
+
+            return;
+        }
+
+        // close
+        if (input.wasTapped(KeyEvent.VK_ESCAPE) || input.wasTapped(KeyEvent.VK_I)) {
+            state = State.DUNGEON;  // ✅ CRITICAL: Actually close the inventory!
+
+            // Only restore if we're still showing the generic inventory help text
             if (lastLog != null && lastLog.startsWith("Inventory:")) {
                 lastLog = lastLogBeforeInventory;
             }
@@ -1254,15 +1502,15 @@ public final class Game {
 
         // switch tabs (left/right)
         if (input.wasTapped(java.awt.event.KeyEvent.VK_LEFT) || input.wasTapped(java.awt.event.KeyEvent.VK_A)) {
-            invPage = (invPage + 3 - 1) % 3; // 0<->1<->2
+            invPage = (invPage + 4 - 1) % 4; // ✅ Changed: 0<->1<->2<->3
         } else if (input.wasTapped(java.awt.event.KeyEvent.VK_RIGHT) || input.wasTapped(java.awt.event.KeyEvent.VK_D)) {
-            invPage = (invPage + 1) % 3;
+            invPage = (invPage + 1) % 4;     // ✅ Changed: 0<->1<->2<->3
         }
 
         // PAGE 0: ITEMS
         if (invPage == 0) {
 
-            java.util.List<ItemType> items = player.inv.nonEmptyTypes();
+            List<ItemType> items = player.inv.nonEmptyTypes();
             int n = items.size();
 
             if (n == 0) {
@@ -1278,9 +1526,9 @@ public final class Game {
 
             // nav up/down
             int dir = 0;
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W))
+            if (input.wasTapped(KeyEvent.VK_UP) || input.wasTapped(KeyEvent.VK_W))
                 dir = -1;
-            else if (input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S))
+            else if (input.wasTapped(KeyEvent.VK_DOWN) || input.wasTapped(KeyEvent.VK_S))
                 dir = +1;
 
             if (dir != 0) {
@@ -1296,7 +1544,7 @@ public final class Game {
             if (invScroll > Math.max(0, n - INV_VISIBLE_ROWS)) invScroll = Math.max(0, n - INV_VISIBLE_ROWS);
 
             // use / equip
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) || input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ENTER) || input.wasTapped(KeyEvent.VK_SPACE)) {
 
                 ItemType chosen = items.get(invIndex);
 
@@ -1374,6 +1622,43 @@ public final class Game {
                         setLog("Learned spell: Heal!", 2.5);
                         return;
                     }
+                    // move tomes: consume to learn
+                    case TOME_SMASH -> {
+                        if (!player.useItem(chosen)) {
+                            setLog("You don't have that.", 2.5);
+                            return;
+                        }
+                        player.learnMove(Player.PhysicalMove.SMASH);
+                        setLog("Learned move: Smash!", 2.5);
+                        return;
+                    }
+                    case TOME_LUNGE -> {
+                        if (!player.useItem(chosen)) {
+                            setLog("You don't have that.", 2.5);
+                            return;
+                        }
+                        player.learnMove(Player.PhysicalMove.LUNGE);
+                        setLog("Learned move: Lunge!", 2.5);
+                        return;
+                    }
+                    case TOME_PARRY -> {
+                        if (!player.useItem(chosen)) {
+                            setLog("You don't have that.", 2.5);
+                            return;
+                        }
+                        player.learnMove(Player.PhysicalMove.PARRY);
+                        setLog("Learned move: Parry!", 2.5);
+                        return;
+                    }
+                    case TOME_SWEEP -> {
+                        if (!player.useItem(chosen)) {
+                            setLog("You don't have that.", 2.5);
+                            return;
+                        }
+                        player.learnMove(Player.PhysicalMove.SWEEP);
+                        setLog("Learned move: Sweep!", 2.5);
+                        return;
+                    }
 
                     // potions (consume + uses a turn)
                     case HP_POTION -> {
@@ -1426,7 +1711,7 @@ public final class Game {
         // PAGE 1: SPELLS
         if (invPage == 1) {
 
-            java.util.List<Player.SpellType> spells = player.knownSpellsInOrder();
+            List<Player.SpellType> spells = player.knownSpellsInOrder();
             int n = spells.size();
 
             if (n == 0) {
@@ -1441,9 +1726,9 @@ public final class Game {
 
             // nav up/down
             int dir = 0;
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W))
+            if (input.wasTapped(KeyEvent.VK_UP) || input.wasTapped(KeyEvent.VK_W))
                 dir = -1;
-            else if (input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S))
+            else if (input.wasTapped(KeyEvent.VK_DOWN) || input.wasTapped(KeyEvent.VK_S))
                 dir = +1;
 
             if (dir != 0) {
@@ -1459,7 +1744,7 @@ public final class Game {
             if (spellScroll > Math.max(0, n - INV_VISIBLE_ROWS)) spellScroll = Math.max(0, n - INV_VISIBLE_ROWS);
 
             // ✅ Cast from inventory (outside battle) — Heal only
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) || input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ENTER) || input.wasTapped(KeyEvent.VK_SPACE)) {
 
                 Player.SpellType chosen = spells.get(spellIndex);
 
@@ -1494,9 +1779,120 @@ public final class Game {
             return;
 
         }
-        // PAGE 2: STATS (read-only)
+
+        // ✅ NEW: PAGE 2: MOVES
         if (invPage == 2) {
+            java.util.List<Player.PhysicalMove> moves = player.knownMovesInOrder();
+            int n = moves.size();
+
+            if (n == 0) {
+                moveIndex = 0;
+                moveScroll = 0;
+                return;
+            }
+
+            // clamp
+            if (moveIndex < 0) moveIndex = 0;
+            if (moveIndex >= n) moveIndex = n - 1;
+
+            // nav up/down
+            int dir = 0;
+            if (input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W))
+                dir = -1;
+            else if (input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S))
+                dir = +1;
+
+            if (dir != 0) {
+                moveIndex += dir;
+                if (moveIndex < 0) moveIndex = 0;
+                if (moveIndex >= n) moveIndex = n - 1;
+            }
+
+            // keep visible
+            if (moveIndex < moveScroll) moveScroll = moveIndex;
+            if (moveIndex >= moveScroll + INV_VISIBLE_ROWS) moveScroll = moveIndex - INV_VISIBLE_ROWS + 1;
+            if (moveScroll < 0) moveScroll = 0;
+            if (moveScroll > Math.max(0, n - INV_VISIBLE_ROWS)) moveScroll = Math.max(0, n - INV_VISIBLE_ROWS);
+
+            // Moves are battle-only, so just show info (no ENTER action)
+            return;
         }
+        // PAGE 3: STATS (read-only)
+        if (invPage == 3) {
+        }
+    }
+
+    private boolean canShopBuyItem(NpcType shopType, ItemType item) {
+        return switch (shopType) {
+            case SHOPKEEPER_ITEMS -> switch (item) {
+                case HP_POTION, MP_POTION, TOWN_PORTAL,
+                     TOME_ICE_SHARD, TOME_HEAL, TOME_SLOW_POKE,
+                     TOME_FLASH_FREEZE, TOME_FIRE_SWORD -> true;
+                default -> false;
+            };
+            case BLACKSMITH_WEAPONS -> switch (item) {
+                case SWORD_WORN, SWORD_BRONZE, SWORD_IRON,
+                     SWORD_STEEL, SWORD_KNIGHT -> true;
+                default -> false;
+            };
+            case INNKEEPER -> false; // Inn doesn't buy anything
+        };
+    }
+
+
+    // Add these fields near the shop fields (around line 75):
+    private boolean inSellMode = false;
+    private List<ItemType> sellableItems = new ArrayList<>();
+    private int sellCursorIndex = 0;
+    private int sellScrollOffset = 0;
+
+    // Add these methods:
+    private void openSellMenu() {
+        if (activeNpc == null) return;
+
+        inSellMode = true;
+        sellableItems.clear();
+
+        // Build list of items player can sell to this shop
+        for (ItemType item : player.inv.nonEmptyTypes()) {
+            if (canShopBuyItem(activeNpc.type, item)) {
+                sellableItems.add(item);
+            }
+        }
+
+        sellCursorIndex = 0;
+        sellScrollOffset = 0;
+    }
+
+    private void closeSellMenu() {
+        inSellMode = false;
+        sellableItems.clear();
+    }
+
+    // Add getter for renderer:
+    public boolean inSellMode() { return inSellMode; }
+    public List<ItemType> sellableItems() { return sellableItems; }
+    public int sellCursorIndex() { return sellCursorIndex; }
+    public int sellScrollOffset() { return sellScrollOffset; }
+
+    public int getItemSellPrice(ItemType item) {
+        int basePrice = switch (item) {
+            case HP_POTION -> 10;
+            case MP_POTION -> 15;
+            case TOWN_PORTAL -> 25;
+            case TOME_ICE_SHARD -> 50;
+            case TOME_HEAL -> 60;
+            case TOME_SLOW_POKE -> 45;
+            case TOME_FLASH_FREEZE -> 70;
+            case TOME_FIRE_SWORD -> 55;
+            case SWORD_WORN -> 5;
+            case SWORD_BRONZE -> 30;
+            case SWORD_IRON -> 60;
+            case SWORD_STEEL -> 120;
+            case SWORD_KNIGHT -> 200;
+            default -> 0;
+        };
+        return basePrice / 4;
     }
 
     private void updateBattle(Input input) {
@@ -1515,66 +1911,19 @@ public final class Game {
         if (battle.phase == Battle.Phase.PLAYER_MENU) {
             // menu navigation
             if (input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W)) {
-                battle.menuIndex = (battle.menuIndex + 3) % 4;
+                battle.menuIndex = (battle.menuIndex + 3) % 4;  // ✅ Changed to 4 options
             } else if (input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S)) {
-                battle.menuIndex = (battle.menuIndex + 1) % 4;
+                battle.menuIndex = (battle.menuIndex + 1) % 4;  // ✅ Changed to 4 options
             }
 
             // confirm
             if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) || input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
 
-                // 0 = FIGHT
+                // 0 = MOVE (open physical move submenu)
                 if (battle.menuIndex == 0) {
-
-                    battle.playerAtkFrames = 10;
-
-                    // Defender dodge check first
-                    if (foeDodgedAttack()) {
-                        battle.log = "The " + battle.foe.name + " dodges your attack!";
-                        battle.phase = Battle.Phase.ENEMY_DELAY;
-                        battle.timerFrames = BATTLE_ENEMY_DELAY_FRAMES;
-
-                        tickPlayerBattleStatusesOnAction();
-                        return;
-                    }
-
-                    int dmg = player.rollDamage(rng);
-
-// Fire Sword bonus: add +6..+9 damage ON TOP while active
-                    if (battle.fireSwordActive) {
-                        int bonus = rng.range(6, 9); // assumes RNG.range(min,max) is inclusive
-                        dmg += bonus;
-                    }
-
-                    // Guard reduction
-                    if (battle.foeGuarded) {
-                        dmg = Math.max(1, dmg / 2);
-                        battle.foeGuarded = false;
-                        battle.log = "The " + battle.foe.name + " blocks! (reduced damage)";
-                    } else {
-                        battle.log = battle.fireSwordActive
-                                ? "You attack (Fire Sword) for " + dmg + "!"
-                                : "You attack for " + dmg + "!";
-                    }
-
-                    // player acted -> tick player statuses
-                    tickPlayerBattleStatusesOnAction();
-
-                    // Hit reaction (visual) happens later
-                    battle.queueEnemyHit(Battle.HIT_LAG_FRAMES, 8);
-
-                    // Damage lands later (HP bar delay)
-                    boolean willKill = (battle.foe.hp - dmg) <= 0;
-                    battle.queueFoeDamage(
-                            Battle.HIT_LAG_FRAMES,
-                            dmg,
-                            willKill,
-                            "The " + battle.foe.name + " was defeated!"
-                    );
-
-                    // Enemy acts after delay (unless queued damage kills it; tickDamage flips to WON)
-                    battle.phase = Battle.Phase.ENEMY_DELAY;
-                    battle.timerFrames = BATTLE_ENEMY_DELAY_FRAMES;
+                    battle.phase = Battle.Phase.MOVE_MENU;
+                    battle.moveIndex = 0;
+                    battle.log = "Choose a move.";
                     return;
                 }
 
@@ -1596,7 +1945,6 @@ public final class Game {
 
                 // 3 = RUN
                 if (battle.menuIndex == 3) {
-                    // simple: always succeed for now
                     battle.log = "You ran away!";
                     startBattleExitFade(false);
                     return;
@@ -1607,8 +1955,8 @@ public final class Game {
         if (battle.phase == Battle.Phase.ENEMY_MESSAGE) {
 
             // Let the player dismiss early
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ENTER) ||
+                    input.wasTapped(KeyEvent.VK_SPACE)) {
                 battle.timerFrames = 0;
             }
 
@@ -1623,7 +1971,7 @@ public final class Game {
         if (battle.phase == Battle.Phase.ITEM_MENU) {
 
             // Build list of items you actually have right now
-            java.util.List<ItemType> items = getUsableBattleItems();
+            List<ItemType> items = getUsableBattleItems();
             int itemCount = items.size();
 
             // If empty, show message + allow back out
@@ -1632,10 +1980,10 @@ public final class Game {
                 // Keep the log line empty so it doesn't duplicate.
                 battle.log = "";
 
-                if (input.wasTapped(java.awt.event.KeyEvent.VK_ESCAPE) ||
-                        input.wasTapped(java.awt.event.KeyEvent.VK_BACK_SPACE) ||
-                        input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) ||
-                        input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+                if (input.wasTapped(KeyEvent.VK_ESCAPE) ||
+                        input.wasTapped(KeyEvent.VK_BACK_SPACE) ||
+                        input.wasTapped(KeyEvent.VK_ENTER) ||
+                        input.wasTapped(KeyEvent.VK_SPACE)) {
                     battle.phase = Battle.Phase.PLAYER_MENU;
                     battle.log = "Choose an action.";
                 }
@@ -1647,8 +1995,8 @@ public final class Game {
             if (battle.itemIndex >= itemCount) battle.itemIndex = itemCount - 1;
 
             // Back out
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ESCAPE) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_BACK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ESCAPE) ||
+                    input.wasTapped(KeyEvent.VK_BACK_SPACE)) {
                 battle.phase = Battle.Phase.PLAYER_MENU;
                 battle.log = "Choose an action.";
                 return;
@@ -1657,13 +2005,13 @@ public final class Game {
             // Navigation: Left/Up prev, Right/Down next
             int dir = 0;
 
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_LEFT) || input.wasTapped(java.awt.event.KeyEvent.VK_A) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W)) {
+            if (input.wasTapped(KeyEvent.VK_LEFT) || input.wasTapped(KeyEvent.VK_A) ||
+                    input.wasTapped(KeyEvent.VK_UP) || input.wasTapped(KeyEvent.VK_W)) {
                 dir = -1;
             }
 
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_RIGHT) || input.wasTapped(java.awt.event.KeyEvent.VK_D) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S)) {
+            if (input.wasTapped(KeyEvent.VK_RIGHT) || input.wasTapped(KeyEvent.VK_D) ||
+                    input.wasTapped(KeyEvent.VK_DOWN) || input.wasTapped(KeyEvent.VK_S)) {
                 dir = +1;
             }
 
@@ -1673,7 +2021,7 @@ public final class Game {
             }
 
             // Use selected item
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) || input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ENTER) || input.wasTapped(KeyEvent.VK_SPACE)) {
 
                 ItemType chosen = items.get(battle.itemIndex);
 
@@ -1708,15 +2056,15 @@ public final class Game {
         if (battle.phase == Battle.Phase.SPELL_MENU) {
 
             var p = player;
-            java.util.List<Player.SpellType> spells = p.knownSpellsInOrder();
+            List<Player.SpellType> spells = p.knownSpellsInOrder();
             int n = spells.size();
 
             if (n == 0) {
                 battle.log = "You know no spells.";
-                if (input.wasTapped(java.awt.event.KeyEvent.VK_ESCAPE) ||
-                        input.wasTapped(java.awt.event.KeyEvent.VK_BACK_SPACE) ||
-                        input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) ||
-                        input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+                if (input.wasTapped(KeyEvent.VK_ESCAPE) ||
+                        input.wasTapped(KeyEvent.VK_BACK_SPACE) ||
+                        input.wasTapped(KeyEvent.VK_ENTER) ||
+                        input.wasTapped(KeyEvent.VK_SPACE)) {
                     battle.phase = Battle.Phase.PLAYER_MENU;
                     battle.log = "Choose an action.";
                 }
@@ -1728,8 +2076,8 @@ public final class Game {
             if (battle.spellIndex >= n) battle.spellIndex = n - 1;
 
             // back
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ESCAPE) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_BACK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ESCAPE) ||
+                    input.wasTapped(KeyEvent.VK_BACK_SPACE)) {
                 battle.phase = Battle.Phase.PLAYER_MENU;
                 battle.log = "Choose an action.";
                 return;
@@ -1737,11 +2085,11 @@ public final class Game {
 
             // nav
             int dir = 0;
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_LEFT) || input.wasTapped(java.awt.event.KeyEvent.VK_A))
+            if (input.wasTapped(KeyEvent.VK_UP) || input.wasTapped(KeyEvent.VK_W) ||
+                    input.wasTapped(KeyEvent.VK_LEFT) || input.wasTapped(KeyEvent.VK_A))
                 dir = -1;
-            else if (input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_RIGHT) || input.wasTapped(java.awt.event.KeyEvent.VK_D))
+            else if (input.wasTapped(KeyEvent.VK_DOWN) || input.wasTapped(KeyEvent.VK_S) ||
+                    input.wasTapped(KeyEvent.VK_RIGHT) || input.wasTapped(KeyEvent.VK_D))
                 dir = +1;
 
             if (dir != 0) {
@@ -1750,7 +2098,7 @@ public final class Game {
             }
 
             // cast
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) || input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ENTER) || input.wasTapped(KeyEvent.VK_SPACE)) {
 
                 Player.SpellType chosen = spells.get(battle.spellIndex);
 
@@ -2021,6 +2369,59 @@ public final class Game {
             return;
         }
 
+        if (battle.phase == Battle.Phase.MOVE_MENU) {
+            var p = player;
+            List<Player.PhysicalMove> moves = p.knownMovesInOrder();
+            int n = moves.size();
+
+            if (n == 0) {
+                battle.log = "You know no moves.";
+                if (input.wasTapped(KeyEvent.VK_ESCAPE) ||
+                        input.wasTapped(KeyEvent.VK_BACK_SPACE) ||
+                        input.wasTapped(KeyEvent.VK_ENTER) ||
+                        input.wasTapped(KeyEvent.VK_SPACE)) {
+                    battle.phase = Battle.Phase.PLAYER_MENU;
+                    battle.log = "Choose an action.";
+                }
+                return;
+            }
+
+            // clamp cursor
+            if (battle.moveIndex < 0) battle.moveIndex = 0;
+            if (battle.moveIndex >= n) battle.moveIndex = n - 1;
+
+            // back
+            if (input.wasTapped(KeyEvent.VK_ESCAPE) ||
+                    input.wasTapped(KeyEvent.VK_BACK_SPACE)) {
+                battle.phase = Battle.Phase.PLAYER_MENU;
+                battle.log = "Choose an action.";
+                return;
+            }
+
+            // nav
+            int dir = 0;
+            if (input.wasTapped(KeyEvent.VK_UP) || input.wasTapped(KeyEvent.VK_W) ||
+                    input.wasTapped(KeyEvent.VK_LEFT) || input.wasTapped(KeyEvent.VK_A))
+                dir = -1;
+            else if (input.wasTapped(KeyEvent.VK_DOWN) || input.wasTapped(KeyEvent.VK_S) ||
+                    input.wasTapped(KeyEvent.VK_RIGHT) || input.wasTapped(KeyEvent.VK_D))
+                dir = +1;
+
+            if (dir != 0) {
+                battle.moveIndex = (battle.moveIndex + dir) % n;
+                if (battle.moveIndex < 0) battle.moveIndex += n;
+            }
+
+            // execute move
+            if (input.wasTapped(KeyEvent.VK_ENTER) || input.wasTapped(KeyEvent.VK_SPACE)) {
+                Player.PhysicalMove chosen = moves.get(battle.moveIndex);
+                executePhysicalMove(chosen);
+                return;
+            }
+
+            return;
+        }
+
         if (battle.phase == Battle.Phase.ENEMY_ACT) {
 
             // Frozen: enemy loses turns
@@ -2095,6 +2496,111 @@ public final class Game {
         }
     }
 
+    public Dungeon building() {
+        return building;
+    }
+
+    private Npc findAdjacentNpc() {
+        if (building == null || player == null) return null;
+
+        int[][] dirs = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+
+        for (int[] d : dirs) {
+            int nx = player.x + d[0];
+            int ny = player.y + d[1];
+            Npc npc = building.npcAt(nx, ny);
+            if (npc != null) return npc;
+        }
+
+        return null;
+    }
+
+    private void openNpcDialogue(Npc npc) {
+        this.activeNpc = npc;
+        this.dialogueLineIndex = 0;
+        this.state = State.NPC_DIALOGUE;
+    }
+
+    private void updateNpcDialogue(Input input) {
+        if (activeNpc == null) {
+            state = State.DUNGEON;
+            return;
+        }
+
+        List<String> lines = activeNpc.dialogueLines();
+
+        // Close dialogue
+        if (input.wasTapped(KeyEvent.VK_ESCAPE) ||
+                input.wasTapped(KeyEvent.VK_ENTER)) {
+            closeNpcDialogue();
+            return;
+        }
+
+        // Z key for action (shop/rest)
+        if (input.wasTapped(KeyEvent.VK_Z)) {
+            performNpcAction(activeNpc);
+            return;
+        }
+    }
+
+    private void closeNpcDialogue() {
+        activeNpc = null;
+        dialogueLineIndex = 0;
+        state = State.DUNGEON;
+    }
+
+    private void performNpcAction(Npc npc) {
+        switch (npc.type) {
+            case INNKEEPER -> {
+                int hpHealed = player.healHp(player.maxHp);
+                int mpRestored = player.healMp(player.maxMp);
+                setLog("You rest at the inn. Fully restored! (+" + hpHealed + " HP, +" + mpRestored + " MP)", 3.0);
+                closeNpcDialogue();
+                turn.endPlayerTurn();
+            }
+            case SHOPKEEPER_ITEMS -> {
+                openItemShop();
+            }
+            case BLACKSMITH_WEAPONS -> {
+                openWeaponShop();
+            }
+        }
+    }
+
+    private void openItemShop() {
+        currentShopItems.clear();
+        currentShopItems.add(new ShopItem(ItemType.HP_POTION, 10, "Restores 8 HP"));
+        currentShopItems.add(new ShopItem(ItemType.MP_POTION, 15, "Restores 6 MP"));
+        currentShopItems.add(new ShopItem(ItemType.TOWN_PORTAL, 25, "Return to town"));
+        currentShopItems.add(new ShopItem(ItemType.TOME_ICE_SHARD, 50, "Learn Ice Shard"));
+        currentShopItems.add(new ShopItem(ItemType.TOME_HEAL, 60, "Learn Heal"));
+        currentShopItems.add(new ShopItem(ItemType.TOME_SLOW_POKE, 45, "Learn Slow Poke"));
+
+        shopCursorIndex = 0;
+        shopScrollOffset = 0;
+        state = State.INVENTORY;
+        invPage = 4; // ✅ FIXED: Shop is page 4 (0=ITEMS, 1=SPELLS, 2=MOVES, 3=STATS, 4=SHOP)
+    }
+
+    private void openWeaponShop() {
+        currentShopItems.clear();
+        currentShopItems.add(new ShopItem(ItemType.SWORD_BRONZE, 30, "+1/+1 ATK"));
+        currentShopItems.add(new ShopItem(ItemType.SWORD_IRON, 60, "+1/+2 ATK"));
+        currentShopItems.add(new ShopItem(ItemType.SWORD_STEEL, 120, "+2/+2 ATK"));
+        currentShopItems.add(new ShopItem(ItemType.SWORD_KNIGHT, 200, "+2/+3 ATK"));
+
+        shopCursorIndex = 0;
+        shopScrollOffset = 0;
+        state = State.INVENTORY;
+        invPage = 4; // ✅ FIXED: Shop is page 4
+    }
+
+    // Add getters for renderer
+    public Npc activeNpc() { return activeNpc; }
+    public List<ShopItem> currentShopItems() { return currentShopItems; }
+    public int shopCursorIndex() { return shopCursorIndex; }
+    public int shopScrollOffset() { return shopScrollOffset; }
+
     private Chest getChestAt(int x, int y) {
         for (Chest c : chests) {
             if (c.x == x && c.y == y && !c.opened) return c;
@@ -2157,6 +2663,11 @@ public final class Game {
         return switch (t) {
             case HP_POTION -> "HP Potion";
             case MP_POTION -> "MP Potion";
+            case GOLD -> "g";
+            case TOME_SMASH -> "Move: Smash";
+            case TOME_LUNGE -> "Move: Lunge";
+            case TOME_PARRY -> "Move: Parry";
+            case TOME_SWEEP -> "Move: Sweep";
             case KEY -> "Key";
             case TOWN_PORTAL -> "Town Portal";
             case SWORD_WORN -> "Worn Sword";
@@ -2310,10 +2821,143 @@ public final class Game {
         logFramesLeft = -1;
     }
 
+    private void executePhysicalMove(Player.PhysicalMove move) {
+        if (battle == null) return;
+
+        battle.playerAtkFrames = 10;
+
+        int baseAcc, dmgMultiplier;
+        boolean canBeDodged, critOnHit, loseTurnOnMiss, isParry;
+        int speedBonus = 0;
+
+        switch (move) {
+            case SLASH -> {
+                baseAcc = 90;
+                dmgMultiplier = 100;
+                canBeDodged = true;
+                critOnHit = false;
+                loseTurnOnMiss = false;
+                isParry = false;
+            }
+            case SMASH -> {
+                baseAcc = 75;
+                dmgMultiplier = 140;
+                canBeDodged = true;
+                critOnHit = false;
+                loseTurnOnMiss = false;
+                isParry = false;
+                // Speed bonus: +2% acc per speed point over 10
+                speedBonus = Math.max(0, player.speed() - 10) * 2;
+            }
+            case LUNGE -> {
+                baseAcc = 85;
+                dmgMultiplier = 110;
+                canBeDodged = true;
+                critOnHit = true;
+                loseTurnOnMiss = true;
+                isParry = false;
+            }
+            case PARRY -> {
+                battle.parryActive = true;
+                battle.log = "You ready your guard!";
+                tickPlayerBattleStatusesOnAction();
+                battle.phase = Battle.Phase.ENEMY_DELAY;
+                battle.timerFrames = BATTLE_ENEMY_DELAY_FRAMES;
+                return;
+            }
+            case SWEEP -> {
+                baseAcc = 100;
+                dmgMultiplier = 80;
+                canBeDodged = false;  // Can't be dodged!
+                critOnHit = false;
+                loseTurnOnMiss = false;
+                isParry = false;
+            }
+            default -> {
+                baseAcc = 90;
+                dmgMultiplier = 100;
+                canBeDodged = true;
+                critOnHit = false;
+                loseTurnOnMiss = false;
+                isParry = false;
+            }
+        }
+
+        // Check dodge (if applicable)
+        if (canBeDodged && foeDodgedAttack()) {
+            if (loseTurnOnMiss) {
+                battle.log = move.name() + " missed! You're off-balance and lose your next turn!";
+                // Enemy gets TWO actions (implement this as a flag if you want)
+            } else {
+                battle.log = "The " + battle.foe.name + " dodges your " + move.name() + "!";
+            }
+            battle.phase = Battle.Phase.ENEMY_DELAY;
+            battle.timerFrames = BATTLE_ENEMY_DELAY_FRAMES;
+            tickPlayerBattleStatusesOnAction();
+            return;
+        }
+
+        // Check hit (accuracy)
+        int finalAcc = baseAcc + speedBonus;
+        int pen = Battle.applyWillVsSlowPenalty(rng, battle.playerAccuracyPenaltyPct, player.will(), battle.playerSlowTurns);
+
+        if (!Battle.rollPhysicalHit(rng, finalAcc, player.speed(), battle.foe.speed(), pen)) {
+            if (loseTurnOnMiss) {
+                battle.log = move.name() + " missed! You're off-balance and lose your next turn!";
+            } else {
+                battle.log = move.name() + " missed!";
+            }
+            battle.phase = Battle.Phase.ENEMY_DELAY;
+            battle.timerFrames = BATTLE_ENEMY_DELAY_FRAMES;
+            tickPlayerBattleStatusesOnAction();
+            return;
+        }
+
+        // Calculate damage
+        int baseDmg = player.rollDamage(rng);
+        int dmg = (baseDmg * dmgMultiplier) / 100;
+
+        // Apply crit
+        if (critOnHit) {
+            dmg = (int) (dmg * 1.5);
+        }
+
+        // Fire Sword bonus
+        if (battle.fireSwordActive) {
+            int bonus = rng.range(6, 9);
+            dmg += bonus;
+        }
+
+        // Guard reduction
+        if (battle.foeGuarded) {
+            dmg = Math.max(1, dmg / 2);
+            battle.foeGuarded = false;
+            battle.log = "The " + battle.foe.name + " blocks your " + move.name() + "! (reduced damage)";
+        } else {
+            String critText = critOnHit ? " CRITICAL HIT!" : "";
+            battle.log = move.name() + " hits for " + dmg + "!" + critText;
+        }
+
+        tickPlayerBattleStatusesOnAction();
+
+        battle.queueEnemyHit(Battle.HIT_LAG_FRAMES, 8);
+
+        boolean willKill = (battle.foe.hp - dmg) <= 0;
+        battle.queueFoeDamage(
+                Battle.HIT_LAG_FRAMES,
+                dmg,
+                willKill,
+                "The " + battle.foe.name + " was defeated!"
+        );
+
+        battle.phase = Battle.Phase.ENEMY_DELAY;
+        battle.timerFrames = BATTLE_ENEMY_DELAY_FRAMES;
+    }
+
     private void updateLevelUp(Input input) {
         // ESC acts like "No" on confirm screen, or "Back" on stat screen
-        boolean esc = input.wasTapped(java.awt.event.KeyEvent.VK_ESCAPE) ||
-                input.wasTapped(java.awt.event.KeyEvent.VK_BACK_SPACE);
+        boolean esc = input.wasTapped(KeyEvent.VK_ESCAPE) ||
+                input.wasTapped(KeyEvent.VK_BACK_SPACE);
 
         // -----------------
         // Stage 0: Confirm
@@ -2321,14 +2965,14 @@ public final class Game {
         if (levelUpStage == 0) {
 
             // toggle YES/NO with up/down
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S)) {
+            if (input.wasTapped(KeyEvent.VK_UP) || input.wasTapped(KeyEvent.VK_W) ||
+                    input.wasTapped(KeyEvent.VK_DOWN) || input.wasTapped(KeyEvent.VK_S)) {
                 levelUpYesNoIndex = 1 - levelUpYesNoIndex; // 0<->1
             }
 
             // confirm
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ENTER) ||
+                    input.wasTapped(KeyEvent.VK_SPACE)) {
 
                 if (levelUpYesNoIndex == 0) {
                     // YES -> go to stat pick
@@ -2370,9 +3014,9 @@ public final class Game {
 
             // nav stats (HP/MP/ATK)
             int dir = 0;
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_UP) || input.wasTapped(java.awt.event.KeyEvent.VK_W))
+            if (input.wasTapped(KeyEvent.VK_UP) || input.wasTapped(KeyEvent.VK_W))
                 dir = -1;
-            else if (input.wasTapped(java.awt.event.KeyEvent.VK_DOWN) || input.wasTapped(java.awt.event.KeyEvent.VK_S))
+            else if (input.wasTapped(KeyEvent.VK_DOWN) || input.wasTapped(KeyEvent.VK_S))
                 dir = +1;
 
             if (dir != 0) {
@@ -2381,8 +3025,8 @@ public final class Game {
             }
 
             // confirm stat
-            if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) ||
-                    input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+            if (input.wasTapped(KeyEvent.VK_ENTER) ||
+                    input.wasTapped(KeyEvent.VK_SPACE)) {
 
                 Player.Stat chosen = switch (levelUpStatIndex) {
                     case 0 -> Player.Stat.HP;
@@ -2514,8 +3158,8 @@ public final class Game {
         // If a fade is running, ignore menu inputs
         if (isFading()) return;
 
-        if (input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) ||
-                input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+        if (input.wasTapped(KeyEvent.VK_ENTER) ||
+                input.wasTapped(KeyEvent.VK_SPACE)) {
 
             startNewGameFade(System.currentTimeMillis());
         }
@@ -2526,15 +3170,15 @@ public final class Game {
         // If a fade is running, ignore inputs
         if (isFading()) return;
 
-        if (input.wasTapped(java.awt.event.KeyEvent.VK_Y) ||
-                input.wasTapped(java.awt.event.KeyEvent.VK_ENTER) ||
-                input.wasTapped(java.awt.event.KeyEvent.VK_SPACE)) {
+        if (input.wasTapped(KeyEvent.VK_Y) ||
+                input.wasTapped(KeyEvent.VK_ENTER) ||
+                input.wasTapped(KeyEvent.VK_SPACE)) {
 
             startNewGameFade(System.currentTimeMillis());
             return;
         }
 
-        if (input.wasTapped(java.awt.event.KeyEvent.VK_N)) {
+        if (input.wasTapped(KeyEvent.VK_N)) {
             goToMainMenu();
         }
     }
@@ -2706,6 +3350,16 @@ public final class Game {
         };
     }
 
+    public String moveLabel(Player.PhysicalMove m) {
+        return switch (m) {
+            case SLASH -> "Slash        (90% acc, 100% dmg)";
+            case SMASH -> "Smash        (75% acc, 140% dmg, +speed)";
+            case LUNGE -> "Lunge        (85% acc, 110% dmg, CRIT or MISS)";
+            case PARRY -> "Parry        (100% acc, blocks next attack)";
+            case SWEEP -> "Sweep        (100% acc, 80% dmg, can't dodge)";
+        };
+    }
+
     public WorldMap activeMap() {
         return switch (zone) {
             case TOWN -> town;
@@ -2756,6 +3410,10 @@ public final class Game {
         return floor;
     }
 
+    public int moveScroll() {
+        return moveScroll;
+    }
+
     public long seed() {
         return seed;
     }
@@ -2794,6 +3452,9 @@ public final class Game {
 
     public int spellScroll() {
         return spellScroll;
+    }
+    public int moveIndex() {
+        return moveIndex;
     }
 
     public int invVisibleRows() {

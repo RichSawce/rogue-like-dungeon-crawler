@@ -10,6 +10,7 @@ public final class Dungeon implements WorldMap {
 
     private final List<Rect> rooms = new ArrayList<>();
 
+    private final java.util.List<Npc> npcs = new java.util.ArrayList<>();
 
     // Fog-of-war
     private final boolean[][] visibleNow;
@@ -204,5 +205,19 @@ public final class Dungeon implements WorldMap {
             int y = rng.range(1, h - 2);
             if (tile(x, y) == Tile.FLOOR) return new int[]{x, y};
         }
+    }
+    public java.util.List<Npc> npcs() {
+        return java.util.Collections.unmodifiableList(npcs);
+    }
+
+    public void addNpc(Npc npc) {
+        npcs.add(npc);
+    }
+
+    public Npc npcAt(int x, int y) {
+        for (Npc n : npcs) {
+            if (n.x == x && n.y == y) return n;
+        }
+        return null;
     }
 }
